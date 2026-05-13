@@ -1,6 +1,8 @@
 ---
 name: hch-import-automation
 description: Automate HCH system data import workflow for task orders, monthly demand plans, and delay plans with multi-environment support (QA/UAT). Execute import processes including login, file upload, submission, and approval.
+category: Automation
+user-invocable: true
 ---
 
 # HCH Import Automation
