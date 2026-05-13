@@ -1177,12 +1177,12 @@ class HCHAPIAutomation:
                 "data": None
             }
     
-    def push_month_plan_to_purchase(self, sale_plan_no: str) -> Dict[str, Any]:
+    def push_month_plan_to_purchase(self, sale_plan_no) -> Dict[str, Any]:
         """
         重推采购（将销售计划推送给采购）
         
         Args:
-            sale_plan_no: 销售计划编号
+            sale_plan_no: 销售计划编号，可以是字符串或字符串列表
             
         Returns:
             接口响应结果
@@ -1196,7 +1196,11 @@ class HCHAPIAutomation:
         
         try:
             # 准备JSON请求体 - 注意是数组格式
-            payload = [sale_plan_no]
+            # 如果传入列表，直接使用；如果传入字符串，包装成列表
+            if isinstance(sale_plan_no, list):
+                payload = sale_plan_no
+            else:
+                payload = [sale_plan_no]
             
             # 设置JSON内容类型
             headers = {
