@@ -8,13 +8,12 @@ from typing import Dict, Any, Optional
 class HCHAPIAutomation:
     """HCH系统API自动化操作类"""
     
-    def __init__(self, config_path: str = None, user_role: str = "submitter", environment: str = "qa"):
+    def __init__(self, config_path: str = None, user_role: str = "submitter"):
         """初始化API自动化类
         
         Args:
             config_path: 配置文件路径（默认为脚本所在目录的automation_config.json）
             user_role: 用户角色 (submitter-提交用户, approver-审批用户)
-            environment: 环境选择 (qa-QA环境, uat-UAT环境)
         """
         # 如果未指定配置文件路径，自动定位到脚本所在目录
         if config_path is None:
@@ -26,16 +25,9 @@ class HCHAPIAutomation:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = json.load(f)['api_config']
         
-        # 根据环境选择base_url
-        environments = self.config.get("environments", {})
-        if environment in environments:
-            self.base_url = environments[environment].get("base_url", "https://ds-oms.gree.com:9002")
-        else:
-            # 兼容旧配置格式
-            self.base_url = self.config.get("base_url", "https://ds-oms.gree.com:9002")
-        
+        # 设置基础URL和API基础路径
+        self.base_url = self.config.get("base_url", "https://ds-oms.gree.com:9002")
         self.api_base = self.config.get("api_base", "/api/api-hch-order-server")
-        self.environment = environment
         
         # 支持多用户token
         users_config = self.config.get("users", {})
@@ -71,13 +63,13 @@ class HCHAPIAutomation:
             # 旧配置格式
             self.default_excel_file = self.config.get("default_excel_file", "")
         
-        # 设置请求头（根据环境动态设置Origin和Referer）
+        # 设置请求头
         self.headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Authorization": f"Bearer {self.token}",
-            "Origin": self.base_url,
-            "Referer": f"{self.base_url}/hch/salesPlan/salesMonthDemand",
+            "Origin": "https://ds-oms.gree.com:9002",
+            "Referer": "https://ds-oms.gree.com:9002/hch/salesPlan/salesMonthDemand",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
         }
         
@@ -90,7 +82,7 @@ class HCHAPIAutomation:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        print(f"✓ HCH API自动化类初始化完成 (用户角色: {self.user_role}, 环境: {self.environment})")
+        print(f"✓ HCH API自动化类初始化完成 (用户角色: {self.user_role})")
     
     def switch_user(self, user_role: str):
         """
@@ -192,8 +184,8 @@ class HCHAPIAutomation:
                     
                     print(f"\n✓ 成功获取 {len(latest_two_records)} 条最新记录")
                     
-                    # 遍历两条记录，检查total
-                    valid_record = None
+                    # 收集所有记录的id，不管total大于0还是小于0都要提交
+                    record_ids = []
                     for idx, record in enumerate(latest_two_records, 1):
                         record_id = record.get('id')
                         total = record.get('total', 0)
@@ -206,37 +198,22 @@ class HCHAPIAutomation:
                         print(f"  - total: {total}")
                         print(f"  - createTime: {create_time}")
                         
-                        # 如果total是正数，使用该记录
-                        if total > 0:
-                            print(f"  ✓ total > 0，使用该记录进行销售审批")
-                            valid_record = {
-                                'id': record_id,
-                                'inputOrderNo': input_order_no,
-                                'total': total,
-                                'createTime': create_time
-                            }
-                            break
-                        else:
-                            print(f"  ✗ total <= 0，忽略该记录")
+                        # 不管total大于0还是小于0，都添加到提交列表
+                        record_ids.append(record_id)
+                        print(f"  ✓ 已添加到提交列表")
                     
-                    if valid_record:
-                        print(f"\n✓ 找到有效记录，id: {valid_record['id']}")
-                        return {
-                            "success": True,
-                            "msg": "成功",
-                            "record_id": valid_record['id'],
-                            "inputOrderNo": valid_record['inputOrderNo'],
-                            "total": valid_record['total'],
-                            "createTime": valid_record['createTime']
-                        }
-                    else:
-                        print(f"\n✗ 未找到total为正的记录")
-                        return {
-                            "success": False,
-                            "msg": "未找到total为正的记录",
-                            "record_id": None,
-                            "total": 0
-                        }
+                    # 使用最新的记录作为主记录（用于后续获取sale_plan_no）
+                    latest_record = latest_two_records[0]
+                    
+                    return {
+                        "success": True,
+                        "msg": "成功",
+                        "record_ids": record_ids,
+                        "inputOrderNo": latest_record.get('inputOrderNo', ''),
+                        "total": latest_record.get('total', 0),
+                        "createTime": latest_record.get('createTime', ''),
+                        "record_count": len(record_ids)
+                    }
                 else:
                     print(f"\n✗ 获取列表失败")
                     print(f"响应内容: {json.dumps(result, ensure_ascii=False, indent=2)}")
@@ -1473,7 +1450,6 @@ def main():
     submitter_token = os.environ.get('SUBMITTER_TOKEN', '').strip()
     approver_token = os.environ.get('APPROVER_TOKEN', '').strip()
     excel_file_path = os.environ.get('EXCEL_FILE_PATH', '').strip()
-    environment = os.environ.get('ENVIRONMENT', 'qa').strip()  # 新增环境参数
     
     # 优先级2: 检查命令行参数
     if not choice and len(sys.argv) > 1:
@@ -1492,7 +1468,6 @@ def main():
             print("请输入 1、2 或 delay！")
     
     print(f"\n选择的导入类型: {choice}")
-    print(f"选择的环境: {environment}")
     if submitter_token:
         print(f"✓ 使用前端传入的submitter token")
     if approver_token:
@@ -1500,16 +1475,16 @@ def main():
     
     if choice == "2":
         # 月需求导入流程
-        run_month_demand_flow(submitter_token, approver_token, excel_file_path, environment)
+        run_month_demand_flow(submitter_token, approver_token, excel_file_path)
     elif choice == "delay":
         # 顺延计划导入流程
-        run_month_delay_flow(submitter_token, approver_token, excel_file_path, environment)
+        run_month_delay_flow(submitter_token, approver_token, excel_file_path)
     else:
         # 任务单导入流程
-        run_task_order_flow(submitter_token, approver_token, excel_file_path, environment)
+        run_task_order_flow(submitter_token, approver_token, excel_file_path)
 
 
-def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
+def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_path=None):
     """任务单导入流程"""
     from datetime import datetime
     
@@ -1517,7 +1492,7 @@ def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_pa
     print("开始执行：任务单导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation(environment=environment)
+    api = HCHAPIAutomation()
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
@@ -1554,7 +1529,7 @@ def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_pa
     return run_common_flow(api, import_result, plan_type="21,22", after_time=before_import_time)
 
 
-def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
+def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_path=None):
     """顺延计划导入流程"""
     from datetime import datetime
     
@@ -1562,7 +1537,7 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
     print("开始执行：顺延计划导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation(environment=environment)
+    api = HCHAPIAutomation()
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
@@ -1621,24 +1596,26 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
         after_time=before_import_time
     )
     
-    if not page_result.get("success") or not page_result.get("record_id"):
-        print(f"\n✗ 未找到有效的顺延计划记录")
+    if not page_result.get("success") or not page_result.get("record_ids"):
+        print(f"\n✗ 未找到顺延计划记录")
         print(f"原因: {page_result.get('msg')}")
         return None
     
-    record_id = page_result["record_id"]
+    record_ids = page_result["record_ids"]
     input_order_no = page_result.get("inputOrderNo", "")
     total = page_result.get("total", 0)
+    record_count = page_result.get("record_count", 0)
     
-    print(f"\n✓ 找到有效记录:")
-    print(f"  - id: {record_id}")
+    print(f"\n✓ 找到 {record_count} 条记录:")
+    print(f"  - record_ids: {record_ids}")
     print(f"  - inputOrderNo: {input_order_no}")
     print(f"  - total: {total}")
     
-    # 步骤3: 顺延计划提交销售审批（使用record_id）
+    # 步骤3: 顺延计划提交销售审批（批量提交所有记录）
     print(f"\n【步骤3】顺延计划提交销售审批...")
+    print(f"  提交记录数: {record_count}")
     submit_sale_result = api.submit_month_delay_to_sale_audit(
-        record_ids=[record_id]
+        record_ids=record_ids
     )
     
     # 检查code字段，0表示成功
@@ -1647,46 +1624,73 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
         print(f"错误信息: {submit_sale_result.get('msg')}")
         return None
     
-    # 从响应中提取sale_plan_no（msg字段的值）
-    # 响应结构: {code: 0, data: {success: [{code: 0, msg: "SY2026051208", ...}]}}
-    sale_plan_no = None
+    # 从响应中提取所有sale_plan_no（msg字段的值）
+    # 响应结构: {code: 0, data: {success: [{code: 0, msg: "SY2026051208", ...}, {code: 0, msg: "SY2026051209", ...}]}}
     data = submit_sale_result.get("data", {})
     success_list = data.get("success", [])
-    
-    if success_list and len(success_list) > 0:
-        sale_plan_no = success_list[0].get("msg")
-    
-    if not sale_plan_no:
+        
+    if not success_list or len(success_list) == 0:
         print(f"\n✗ 未能从响应中提取sale_plan_no")
         print(f"响应数据: {json.dumps(submit_sale_result, ensure_ascii=False, indent=2)}")
         return None
-    
-    print(f"\n✓ 成功提取sale_plan_no: {sale_plan_no}")
-    
-    # 步骤4: 直接推送到采购系统（跳过审批流程）
+        
+    # 提取所有成功的sale_plan_no，但只取前两条（对应最新的两条记录）
+    sale_plan_nos = []
+    for idx, item in enumerate(success_list, 1):
+        if item.get("code") == 0:
+            sale_plan_no = item.get("msg")
+            if sale_plan_no:
+                sale_plan_nos.append(sale_plan_no)
+                print(f"  ✓ 记录{idx} - sale_plan_no: {sale_plan_no}")
+        
+        # 只取前两条
+        if len(sale_plan_nos) >= 2:
+            break
+        
+    if not sale_plan_nos:
+        print(f"\n✗ 没有成功审批的记录")
+        return None
+        
+    print(f"\n✓ 提取到 {len(sale_plan_nos)} 个销售计划号: {sale_plan_nos}")
+        
+    # 步骤4: 推送到采购系统（只推送前两条）
     print(f"\n【步骤4】推送到采购系统...")
-    push_result = api.push_month_plan_to_purchase(
-        sale_plan_no=sale_plan_no
-    )
+    push_results = []
+    for idx, sale_plan_no in enumerate(sale_plan_nos, 1):
+        print(f"\n  推送第 {idx}/{len(sale_plan_nos)} 条: {sale_plan_no}")
+        push_result = api.push_month_plan_to_purchase(
+            sale_plan_no=sale_plan_no
+        )
+            
+        if push_result.get("code") == 0:
+            print(f"  ✓ 推送成功")
+            push_results.append({"salePlanNo": sale_plan_no, "success": True})
+        else:
+            print(f"  ✗ 推送失败: {push_result.get('msg')}")
+            push_results.append({"salePlanNo": sale_plan_no, "success": False, "msg": push_result.get('msg')})
     
     # 输出总结
     print("\n" + "="*60)
     print("顺延计划导入流程执行完成")
     print("="*60)
     print(f"✓ 输入单号: {input_order_no}")
-    print(f"✓ 销售计划号: {sale_plan_no}")
+    print(f"✓ 提交记录数: {record_count}")
+    print(f"✓ 成功推送数: {len([r for r in push_results if r.get('success')])}")
+    print(f"✓ 销售计划号: {sale_plan_nos}")
     print(f"✓ 状态: 已完成")
     
     return {
         "success": True,
         "inputOrderNo": input_order_no,
-        "salePlanNo": sale_plan_no,
-        "record_id": record_id,
-        "total": total
+        "salePlanNos": sale_plan_nos,
+        "record_ids": record_ids,
+        "total": total,
+        "record_count": record_count,
+        "push_results": push_results
     }
 
 
-def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
+def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_path=None):
     """月需求导入流程"""
     from datetime import datetime
     
@@ -1694,7 +1698,7 @@ def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_
     print("开始执行：月需求导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation(environment=environment)
+    api = HCHAPIAutomation()
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
