@@ -8,12 +8,13 @@ from typing import Dict, Any, Optional
 class HCHAPIAutomation:
     """HCH系统API自动化操作类"""
     
-    def __init__(self, config_path: str = None, user_role: str = "submitter"):
+    def __init__(self, config_path: str = None, user_role: str = "submitter", environment: str = "qa"):
         """初始化API自动化类
         
         Args:
             config_path: 配置文件路径（默认为脚本所在目录的automation_config.json）
             user_role: 用户角色 (submitter-提交用户, approver-审批用户)
+            environment: 环境选择 (qa-QA环境, uat-UAT环境)
         """
         # 如果未指定配置文件路径，自动定位到脚本所在目录
         if config_path is None:
@@ -25,9 +26,16 @@ class HCHAPIAutomation:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = json.load(f)['api_config']
         
-        # 设置基础URL和API基础路径
-        self.base_url = self.config.get("base_url", "https://ds-oms.gree.com:9002")
+        # 根据环境选择base_url
+        environments = self.config.get("environments", {})
+        if environment in environments:
+            self.base_url = environments[environment].get("base_url", "https://ds-oms.gree.com:9002")
+        else:
+            # 兼容旧配置格式
+            self.base_url = self.config.get("base_url", "https://ds-oms.gree.com:9002")
+        
         self.api_base = self.config.get("api_base", "/api/api-hch-order-server")
+        self.environment = environment
         
         # 支持多用户token
         users_config = self.config.get("users", {})
@@ -63,13 +71,13 @@ class HCHAPIAutomation:
             # 旧配置格式
             self.default_excel_file = self.config.get("default_excel_file", "")
         
-        # 设置请求头
+        # 设置请求头（根据环境动态设置Origin和Referer）
         self.headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Authorization": f"Bearer {self.token}",
-            "Origin": "https://ds-oms.gree.com:9002",
-            "Referer": "https://ds-oms.gree.com:9002/hch/salesPlan/salesMonthDemand",
+            "Origin": self.base_url,
+            "Referer": f"{self.base_url}/hch/salesPlan/salesMonthDemand",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
         }
         
@@ -82,7 +90,7 @@ class HCHAPIAutomation:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        print(f"✓ HCH API自动化类初始化完成 (用户角色: {self.user_role})")
+        print(f"✓ HCH API自动化类初始化完成 (用户角色: {self.user_role}, 环境: {self.environment})")
     
     def switch_user(self, user_role: str):
         """
@@ -1450,6 +1458,7 @@ def main():
     submitter_token = os.environ.get('SUBMITTER_TOKEN', '').strip()
     approver_token = os.environ.get('APPROVER_TOKEN', '').strip()
     excel_file_path = os.environ.get('EXCEL_FILE_PATH', '').strip()
+    environment = os.environ.get('ENVIRONMENT', 'qa').strip()  # 新增环境参数
     
     # 优先级2: 检查命令行参数
     if not choice and len(sys.argv) > 1:
@@ -1468,6 +1477,7 @@ def main():
             print("请输入 1、2 或 delay！")
     
     print(f"\n选择的导入类型: {choice}")
+    print(f"选择的环境: {environment}")
     if submitter_token:
         print(f"✓ 使用前端传入的submitter token")
     if approver_token:
@@ -1475,16 +1485,16 @@ def main():
     
     if choice == "2":
         # 月需求导入流程
-        run_month_demand_flow(submitter_token, approver_token, excel_file_path)
+        run_month_demand_flow(submitter_token, approver_token, excel_file_path, environment)
     elif choice == "delay":
         # 顺延计划导入流程
-        run_month_delay_flow(submitter_token, approver_token, excel_file_path)
+        run_month_delay_flow(submitter_token, approver_token, excel_file_path, environment)
     else:
         # 任务单导入流程
-        run_task_order_flow(submitter_token, approver_token, excel_file_path)
+        run_task_order_flow(submitter_token, approver_token, excel_file_path, environment)
 
 
-def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_path=None):
+def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
     """任务单导入流程"""
     from datetime import datetime
     
@@ -1492,7 +1502,7 @@ def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_pa
     print("开始执行：任务单导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation()
+    api = HCHAPIAutomation(environment=environment)
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
@@ -1529,7 +1539,7 @@ def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_pa
     return run_common_flow(api, import_result, plan_type="21,22", after_time=before_import_time)
 
 
-def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_path=None):
+def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
     """顺延计划导入流程"""
     from datetime import datetime
     
@@ -1537,7 +1547,7 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
     print("开始执行：顺延计划导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation()
+    api = HCHAPIAutomation(environment=environment)
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
@@ -1690,7 +1700,7 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
     }
 
 
-def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_path=None):
+def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_path=None, environment='qa'):
     """月需求导入流程"""
     from datetime import datetime
     
@@ -1698,7 +1708,7 @@ def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_
     print("开始执行：月需求导入流程")
     print("="*60)
     
-    api = HCHAPIAutomation()
+    api = HCHAPIAutomation(environment=environment)
     
     # 如果前端传入了token，则覆盖配置文件中的token
     if submitter_token:
