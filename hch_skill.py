@@ -92,9 +92,16 @@ class HCHSkillExecutor:
                     "timestamp": datetime.now().isoformat()
                 }
             
-            # 步骤3：确定planImportType
-            plan_import_type = 1 if import_type == "task_order" else 0
-            import_type_name = "任务单" if import_type == "task_order" else "月需求"
+            # 步骤3：确定planImportType和导入类型名称
+            if import_type == "task_order":
+                plan_import_type = 1
+                import_type_name = "任务单"
+            elif import_type == "month_demand":
+                plan_import_type = 0
+                import_type_name = "月需求"
+            else:  # delay_plan
+                plan_import_type = None
+                import_type_name = "顺延计划"
             
             print(f"\n{'='*60}")
             print(f"开始执行{import_type_name}导入")
@@ -102,14 +109,24 @@ class HCHSkillExecutor:
             print(f"文件路径: {actual_file_path}")
             print(f"计划类型: planImportType={plan_import_type}")
             
-            # 步骤4：创建自动化实例并执行完整流程
-            result = self._run_full_flow(
-                submitter_token=submitter_token,
-                approver_token=approver_token,
-                file_path=actual_file_path,
-                plan_import_type=plan_import_type,
-                check_high_inventory=check_high_inventory
-            )
+            # 步骤4：根据导入类型执行对应的流程
+            if import_type == "delay_plan":
+                # 顺延计划使用独立的4步流程
+                result = self._run_delay_plan_flow(
+                    submitter_token=submitter_token,
+                    approver_token=approver_token,
+                    file_path=actual_file_path,
+                    check_high_inventory=check_high_inventory
+                )
+            else:
+                # 任务单和月需求使用7步流程
+                result = self._run_full_flow(
+                    submitter_token=submitter_token,
+                    approver_token=approver_token,
+                    file_path=actual_file_path,
+                    plan_import_type=plan_import_type,
+                    check_high_inventory=check_high_inventory
+                )
             
             # 步骤5：清理临时文件
             self._cleanup_temp_files()
@@ -143,8 +160,8 @@ class HCHSkillExecutor:
         if not approver_token or not approver_token.strip():
             errors.append("缺少审批者token")
         
-        if import_type not in ["task_order", "month_demand"]:
-            errors.append(f"无效的导入类型: {import_type}，应为 'task_order' 或 'month_demand'")
+        if import_type not in ["task_order", "month_demand", "delay_plan"]:
+            errors.append(f"无效的导入类型: {import_type}，应为 'task_order'、'month_demand' 或 'delay_plan'")
         
         if not file_path and not file_base64:
             errors.append("必须提供文件路径或文件内容（base64）")
@@ -213,6 +230,170 @@ class HCHSkillExecutor:
         
         return None
     
+    def _run_delay_plan_flow(
+        self,
+        submitter_token: str,
+        approver_token: str,
+        file_path: str,
+        check_high_inventory: bool = False
+    ) -> Dict[str, Any]:
+        """
+        执行顺延计划的完整导入流程
+        
+        流程包括（4步）：
+        1. 获取顺延计划列表
+        2. 导入顺延计划文件
+        3. 提交销售审批（批量）
+        4. 重推采购
+        """
+        import time
+        
+        try:
+            # ===== 阶段1：获取顺延计划列表 =====
+            print("\n【阶段1】获取顺延计划列表")
+            submitter_api = HCHAPIAutomation(user_role="submitter")
+            
+            # 动态设置token
+            submitter_api.token = submitter_token
+            submitter_api.headers["Authorization"] = f"Bearer {submitter_token}"
+            submitter_api.session.headers.update(submitter_api.headers)
+            
+            # 获取最新的顺延计划记录
+            delay_plan_list = submitter_api.get_month_delay_plan_page(
+                current=1,
+                size=10
+            )
+            
+            if not delay_plan_list.get("success"):
+                return {
+                    "success": False,
+                    "message": f"获取顺延计划列表失败: {delay_plan_list.get('msg')}",
+                    "stage": "get_delay_plan_list",
+                    "data": delay_plan_list,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            # 提取记录ID
+            records = delay_plan_list.get("records", [])
+            if not records:
+                return {
+                    "success": False,
+                    "message": "未找到顺延计划记录",
+                    "stage": "get_delay_plan_list",
+                    "data": delay_plan_list,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            # 获取最新的一条记录
+            latest_record = records[0]
+            record_id = latest_record.get("id")
+            sale_plan_no = latest_record.get("salePlanNo")
+            
+            print(f"✓ 获取顺延计划列表成功")
+            print(f"  record_id: {record_id}")
+            print(f"  salePlanNo: {sale_plan_no}")
+            
+            # ===== 阶段2：导入顺延计划文件 =====
+            print("\n【阶段2】导入顺延计划文件")
+            import_result = submitter_api.import_month_delay_plan(
+                file_path=file_path,
+                max_retries=3,
+                retry_interval=20
+            )
+            
+            if not import_result.get("success"):
+                return {
+                    "success": False,
+                    "message": f"导入失败: {import_result.get('msg', '未知错误')}",
+                    "stage": "import",
+                    "data": import_result,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            print("✓ 导入成功")
+            
+            # 等待数据写入
+            print("\n等待3秒，确保数据写入数据库...")
+            time.sleep(3)
+            
+            # ===== 阶段3：提交销售审批 =====
+            print("\n【阶段3】提交销售审批")
+            approver_api = HCHAPIAutomation(user_role="approver")
+            
+            # 动态设置token
+            approver_api.token = approver_token
+            approver_api.headers["Authorization"] = f"Bearer {approver_token}"
+            approver_api.session.headers.update(approver_api.headers)
+            
+            # 批量提交审批
+            submit_audit_result = approver_api.submit_month_delay_to_sale_audit(
+                record_ids=[record_id]
+            )
+            
+            if submit_audit_result.get("code") != 0:
+                return {
+                    "success": False,
+                    "message": f"提交销售审批失败: {submit_audit_result.get('msg')}",
+                    "stage": "submit_audit",
+                    "data": submit_audit_result,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            print("✓ 提交销售审批成功")
+            
+            # 等待审批处理
+            print("\n等待3秒，确保审批处理完成...")
+            time.sleep(3)
+            
+            # ===== 阶段4：重推采购 =====
+            print("\n【阶段4】重推采购")
+            push_purchase_result = approver_api.push_month_plan_to_purchase(
+                sale_plan_no=sale_plan_no
+            )
+            
+            if push_purchase_result.get("code") != 0:
+                return {
+                    "success": False,
+                    "message": f"重推采购失败: {push_purchase_result.get('msg')}",
+                    "stage": "push_purchase",
+                    "data": push_purchase_result,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            print("✓ 重推采购成功")
+            
+            # ===== 完成 =====
+            print(f"\n{'='*60}")
+            print("✓ 顺延计划导入流程执行成功!")
+            print(f"{'='*60}")
+            
+            return {
+                "success": True,
+                "message": "顺延计划导入流程执行成功",
+                "data": {
+                    "recordId": record_id,
+                    "salePlanNo": sale_plan_no,
+                    "importResult": import_result,
+                    "submitAuditResult": submit_audit_result,
+                    "pushPurchaseResult": push_purchase_result
+                },
+                "summary": {
+                    "导入类型": "顺延计划",
+                    "记录ID": record_id,
+                    "销售计划编号": sale_plan_no,
+                    "状态": "已完成"
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"流程执行异常: {str(e)}",
+                "error_details": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+    
     def _run_full_flow(
         self,
         submitter_token: str,
@@ -224,7 +405,7 @@ class HCHSkillExecutor:
         """
         执行完整的导入流程
         
-        流程包括：
+        流程包括（7步）：
         1. 提交用户导入文件
         2. 获取最新记录
         3. 提交排产
@@ -474,7 +655,7 @@ def execute_import(
     Args:
         submitter_token: 提交者token
         approver_token: 审批者token
-        import_type: 导入类型 ("task_order" 或 "month_demand")
+        import_type: 导入类型 ("task_order"、"month_demand" 或 "delay_plan")
         file_path: 文件路径（可选）
         file_base64: base64编码的文件内容（可选）
         filename: 文件名（与file_base64配合使用）
@@ -504,13 +685,13 @@ def get_skill_info() -> Dict[str, Any]:
     """
     return {
         "name": "hch_import_automation",
-        "version": "1.0.0",
-        "description": "HCH系统API自动化导入技能，支持任务单和月需求的完整导入流程",
+        "version": "1.1.0",
+        "description": "HCH系统API自动化导入技能，支持任务单、月需求和顺延计划的完整导入流程",
         "author": "HCH Automation Team",
         "functions": [
             {
                 "name": "execute_import",
-                "description": "执行HCH系统导入操作（任务单或月需求）",
+                "description": "执行HCH系统导入操作（任务单、月需求或顺延计划）",
                 "parameters": {
                     "submitter_token": {
                         "type": "string",
@@ -525,8 +706,8 @@ def get_skill_info() -> Dict[str, Any]:
                     "import_type": {
                         "type": "string",
                         "required": True,
-                        "enum": ["task_order", "month_demand"],
-                        "description": "导入类型：task_order=任务单导入，month_demand=月需求导入"
+                        "enum": ["task_order", "month_demand", "delay_plan"],
+                        "description": "导入类型：task_order=任务单导入，month_demand=月需求导入，delay_plan=顺延计划导入"
                     },
                     "file_path": {
                         "type": "string",
@@ -573,6 +754,17 @@ result = execute_import(
     import_type="month_demand",
     file_base64="UEsDBBQAAAAI...",  # base64编码的Excel
     filename="demand.xlsx"
+)
+                """
+            },
+            {
+                "description": "导入顺延计划",
+                "code": """
+result = execute_import(
+    submitter_token="your_submitter_token",
+    approver_token="your_approver_token",
+    import_type="delay_plan",
+    file_path="./templates/顺延计划导入模板.xlsx"
 )
                 """
             }
