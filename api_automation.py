@@ -206,9 +206,12 @@ class HCHAPIAutomation:
                         print(f"  - total: {total}")
                         print(f"  - createTime: {create_time}")
                         
-                        # 不管total大于0还是小于0，都添加到提交列表
-                        record_ids.append(record_id)
-                        print(f"  ✓ 已添加到提交列表")
+                        # 只添加有效的id（不为None且不为空）
+                        if record_id is not None and record_id != '':
+                            record_ids.append(record_id)
+                            print(f"  ✓ 已添加到提交列表")
+                        else:
+                            print(f"  ✗ id为空，跳过该记录")
                     
                     # 使用最新的记录作为主记录（用于后续获取sale_plan_no）
                     latest_record = latest_two_records[0]
