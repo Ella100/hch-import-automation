@@ -1,0 +1,46 @@
+{
+  "api_config": {
+    "environments": {
+      "qa": {
+        "base_url": "https://ds-oms.gree.com:9002",
+        "description": "QA环境"
+      },
+      "uat": {
+        "base_url": "https://ds-oms.gree.com:9108",
+        "description": "UAT环境"
+      }
+    },
+    "users": {
+      "submitter": {
+        "token": "3676254e-83fb-47d3-a205-754b4e17ce5f",
+        "description": "提交申请的用户"
+      },
+      "approver": {
+        "token": "d80cfe77-3640-41d9-8d65-09934bc89e96",
+        "description": "审批用户"
+      }
+    },
+    "base_url": "https://ds-oms.gree.com:9002",
+    "api_base": "/api/api-hch-order-server",
+    "default_excel_files": {
+      "task_order": "./任务单导入模板测试.xlsx",
+      "month_demand": "./销售月需求导入模板.xlsx",
+      "month_delay": "./顺延计划导入模板.xlsx"
+    },
+    "default_excel_file": "./任务单导入模板测试.xlsx",
+    "import_params": {
+      "task_order": {
+        "checkHighInventoryFlag": false,
+        "planImportType": 1,
+        "planType": "21,22",
+        "description": "任务单导入参数"
+      },
+      "month_demand": {
+        "checkHighInventoryFlag": false,
+        "planImportType": 0,
+        "planType": "1,12",
+        "description": "销售月需求导入参数"
+      }
+    }
+  }
+}
