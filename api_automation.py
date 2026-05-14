@@ -1358,14 +1358,13 @@ class HCHAPIAutomation:
                 "data": None
             }
     
-    def get_latest_audit_order(self, current: int = 1, size: int = 10, audit_type_codes: list = [2]) -> Dict[str, Any]:
+    def get_latest_audit_order(self, current: int = 1, size: int = 10) -> Dict[str, Any]:
         """
         刷新审批列表，获取createTime最新的一条数据的auditOrderNo和inputOrderNo
         
         Args:
             current: 当前页码 (默认1)
             size: 每页条数 (默认10)
-            audit_type_codes: 审批类型代码列表 (默认[2])
             
         Returns:
             包含auditOrderNo和inputOrderNo的结果字典
@@ -1378,11 +1377,11 @@ class HCHAPIAutomation:
         print(f"{'='*50}")
         
         try:
-            # 准备JSON请求体
+            # 准备JSON请求体 - auditTypeCodes固定为[2]
             payload = {
                 'current': current,
                 'size': size,
-                'auditTypeCodes': audit_type_codes
+                'auditTypeCodes': [2]
             }
             
             # 设置JSON内容类型
@@ -1393,7 +1392,7 @@ class HCHAPIAutomation:
             print(f"\n请求参数:")
             print(f"  - current: {current}")
             print(f"  - size: {size}")
-            print(f"  - auditTypeCodes: {audit_type_codes}")
+            print(f"  - auditTypeCodes: [2]（固定值）")
             
             # 发送POST请求
             response = self.session.post(url, json=payload, headers=headers)
@@ -1675,6 +1674,13 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
     push_results = []
     for idx, sale_plan_no in enumerate(sale_plan_nos, 1):
         print(f"\n  推送第 {idx}/{len(sale_plan_nos)} 条: {sale_plan_no}")
+        
+        # 如果不是第一条，等待2秒再推送下一条（避免接口限流）
+        if idx > 1:
+            print(f"   等待2秒后推送下一条...")
+            import time
+            time.sleep(2)
+        
         push_result = api.push_month_plan_to_purchase(
             sale_plan_no=sale_plan_no
         )
