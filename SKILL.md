@@ -47,8 +47,7 @@ result = execute_import(
 
 ## Execution Flow
 
-The import process executes 8 steps automatically:
-
+### Task Order & Monthly Demand (8 steps)
 1. **Login** - Authenticate with HCH system
 2. **Get Upload Token** - Obtain file upload authorization
 3. **Upload File** - Upload Excel template
@@ -57,6 +56,14 @@ The import process executes 8 steps automatically:
 6. **Approve** - Execute approval action
 7. **Confirm Approval** - Verify approval status
 8. **Check Inventory** - Optional high inventory risk check
+
+### Delay Plan (4 steps) - Simplified Workflow
+1. **Import Delay Plan** - Upload delay plan Excel file (`/month-delay-plan/import`)
+2. **Get Latest Records** - Query records with time filtering, get the 2 most recent records
+3. **Submit Sale Approval** - Batch submit to sale approval (`/month-delay-plan/release-month-production-plan/batch`)
+4. **Push to Purchase** - Directly push to purchase system, **no approval required** (`/push-month-plan/sale-plan-no`)
+
+**Note**: Delay plan workflow skips the approval process (no `approve_sale_audit()`, no user switching)
 
 ## Example Usage
 
@@ -86,6 +93,29 @@ result = execute_import(
     check_high_inventory=True,
     environment="uat"
 )
+```
+
+### Delay Plan Import (QA Environment)
+```python
+result = execute_import(
+    submitter_token="sub_token_here",
+    approver_token="app_token_here",
+    import_type="delay_plan",
+    file_path="F:/templates/顺延计划导入模板.xlsx",
+    environment="qa"
+)
+```
+
+### Command Line Usage
+```bash
+# Task order import
+python hch_cli.py task
+
+# Monthly demand import
+python hch_cli.py month
+
+# Delay plan import
+python hch_cli.py delay
 ```
 
 ### Base64 File Upload
@@ -157,6 +187,8 @@ Configure the environment in the `automation_config.json` file or pass it as a p
 - Network: Ensure API endpoints are accessible
 - Testing: Validate in test environment before production use
 - High inventory: Detection only available for monthly_demand imports
+- **Delay plan workflow**: Simplified 4-step process, no approval required
+- **Delay plan template**: Requires `./顺延计划导入模板.xlsx` file
 
 ## Troubleshooting
 
