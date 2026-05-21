@@ -8,7 +8,7 @@ HCH API自动化命令行工具
 import sys
 import os
 import json
-from api_automation import HCHAPIAutomation, run_task_order_flow, run_month_demand_flow
+from api_automation import HCHAPIAutomation, run_task_order_flow, run_month_demand_flow, run_month_delay_flow
 
 
 def print_banner():
@@ -24,13 +24,15 @@ def show_help():
     print("  python hch_cli.py [命令] [选项]")
     print("\n可用命令:")
     print("  task        - 执行任务单导入流程")
-    print("  month       - 执行月需求导入流程") 
+    print("  month       - 执行月需求导入流程")
+    print("  delay       - 执行顺延计划导入流程")
     print("  import      - 仅执行导入操作")
     print("  status      - 查询导入状态")
     print("  help        - 显示此帮助信息")
     print("\n示例:")
     print("  python hch_cli.py task")
     print("  python hch_cli.py month")
+    print("  python hch_cli.py delay")
     print("  python hch_cli.py import --file my_file.xlsx --type 1")
 
 
@@ -88,6 +90,15 @@ def main():
             print("\n✓ 月需求流程执行成功!")
         else:
             print("\n✗ 月需求流程执行失败!")
+            
+    elif command == "delay":
+        print_banner()
+        print("\n执行顺延计划导入流程...")
+        result = run_month_delay_flow()
+        if result:
+            print("\n✓ 顺延计划流程执行成功!")
+        else:
+            print("\n✗ 顺延计划流程执行失败!")
             
     elif command == "import":
         print_banner()
