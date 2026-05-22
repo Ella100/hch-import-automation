@@ -56,6 +56,7 @@ result = run_month_delay_flow(
 | file_base64 | No | Base64 encoded file content |
 | filename | No | Filename (required when using file_base64) |
 | check_high_inventory | No | Enable high inventory risk detection (default: false) |
+| environment | No | Target environment: "qa" (default) or "uat" |
 
 ### For api_automation.run_month_delay_flow() (Delay Plan)
 | Parameter | Required | Description |
@@ -101,7 +102,7 @@ result = execute_import(
     submitter_token="sub_token_here",
     approver_token="app_token_here",
     import_type="task_order",
-    file_path="F:/templates/任务单导入模板.xlsx",
+    file_path="/path/to/your/excel/file.xlsx",  # User-provided file path
     environment="qa"
 )
 
@@ -116,8 +117,8 @@ else:
 result = execute_import(
     submitter_token="sub_token_here",
     approver_token="app_token_here",
-    import_type="monthly_demand",
-    file_path="F:/templates/销售月需求导入模板.xlsx",
+    import_type="month_demand",
+    file_path="/path/to/your/excel/file.xlsx",  # User-provided file path
     check_high_inventory=True,
     environment="uat"
 )
@@ -130,7 +131,7 @@ from api_automation import run_month_delay_flow
 result = run_month_delay_flow(
     submitter_token="sub_token_here",
     approver_token="app_token_here",
-    excel_file_path="F:/templates/顺延计划导入模板.xlsx",
+    excel_file_path="/path/to/your/excel/file.xlsx",  # User-provided file path
     environment="qa"
 )
 ```
