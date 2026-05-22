@@ -53,7 +53,8 @@ class HCHSkillExecutor:
         file_path: Optional[str] = None,
         file_base64: Optional[str] = None,
         filename: Optional[str] = None,
-        check_high_inventory: bool = False
+        check_high_inventory: bool = False,
+        environment: str = "qa"
     ) -> Dict[str, Any]:
         """
         执行导入操作（主入口函数）
@@ -66,6 +67,7 @@ class HCHSkillExecutor:
             file_base64: base64编码的文件内容（如果通过对话上传）
             filename: 文件名（与file_base64配合使用）
             check_high_inventory: 是否检查高库存
+            environment: 目标环境 "qa"（默认）或 "uat"
             
         Returns:
             执行结果字典，包含success、message、data等字段
@@ -101,6 +103,7 @@ class HCHSkillExecutor:
             print(f"{'='*60}")
             print(f"文件路径: {actual_file_path}")
             print(f"计划类型: planImportType={plan_import_type}")
+            print(f"目标环境: {environment.upper()}")
             
             # 步骤4：创建自动化实例并执行完整流程
             result = self._run_full_flow(
@@ -108,7 +111,8 @@ class HCHSkillExecutor:
                 approver_token=approver_token,
                 file_path=actual_file_path,
                 plan_import_type=plan_import_type,
-                check_high_inventory=check_high_inventory
+                check_high_inventory=check_high_inventory,
+                environment=environment
             )
             
             # 步骤5：清理临时文件
@@ -219,7 +223,8 @@ class HCHSkillExecutor:
         approver_token: str,
         file_path: str,
         plan_import_type: int,
-        check_high_inventory: bool = False
+        check_high_inventory: bool = False,
+        environment: str = "qa"
     ) -> Dict[str, Any]:
         """
         执行完整的导入流程
@@ -239,7 +244,7 @@ class HCHSkillExecutor:
         try:
             # ===== 阶段1：提交用户操作 =====
             print("\n【阶段1】提交用户 - 导入文件")
-            submitter_api = HCHAPIAutomation(user_role="submitter")
+            submitter_api = HCHAPIAutomation(user_role="submitter", environment=environment)
             
             # 动态设置token（不依赖配置文件）
             submitter_api.token = submitter_token
@@ -317,7 +322,7 @@ class HCHSkillExecutor:
             
             # ===== 阶段4：审批用户操作 =====
             print("\n【阶段4】审批用户 - 提交销售审批")
-            approver_api = HCHAPIAutomation(user_role="approver")
+            approver_api = HCHAPIAutomation(user_role="approver", environment=environment)
             
             # 动态设置token
             approver_api.token = approver_token
@@ -463,7 +468,8 @@ def execute_import(
     file_path: Optional[str] = None,
     file_base64: Optional[str] = None,
     filename: Optional[str] = None,
-    check_high_inventory: bool = False
+    check_high_inventory: bool = False,
+    environment: str = "qa"
 ) -> Dict[str, Any]:
     """
     执行导入操作的便捷函数
@@ -478,6 +484,7 @@ def execute_import(
         file_base64: base64编码的文件内容（可选）
         filename: 文件名（与file_base64配合使用）
         check_high_inventory: 是否检查高库存
+        environment: 目标环境 "qa"（默认）或 "uat"
         
     Returns:
         执行结果字典
@@ -490,7 +497,8 @@ def execute_import(
         file_path=file_path,
         file_base64=file_base64,
         filename=filename,
-        check_high_inventory=check_high_inventory
+        check_high_inventory=check_high_inventory,
+        environment=environment
     )
 
 
