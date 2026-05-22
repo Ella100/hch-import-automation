@@ -14,48 +14,76 @@ Automate HCH system data import with dual-token authentication, multi-environmen
 - **Multi-environment support**: QA (port 9002) and UAT (port 9108)
 - **Three import types**: Task orders, monthly demand, delay plans
 - **Dual-token authentication**: Submitter and approver tokens
-- **High inventory detection**: Automatic handling for monthly demand imports
-- **Error recovery**: Automatic retry mechanism for CWMS service degradation
+- **High inventory detection**: Automatic retry for CWMS service degradation, supports specific material import with high_inventory_id
+- **Error recovery**: Automatic retry mechanism (3 retries, 20s interval) for CWMS service degradation
 
 ## Quick Start
 
-Call the execute_import function with required tokens and file:
-
+### Task Order & Monthly Demand (via hch_skill.py)
 ```python
 from hch_skill import execute_import
 
 result = execute_import(
     submitter_token="your_submitter_token",
     approver_token="your_approver_token",
-    import_type="task_order",  # or "monthly_demand"
-    file_path="path/to/file.xlsx"
+    import_type="task_order",  # or "month_demand" (not "monthly_demand")
+    file_path="path/to/file.xlsx",
+    check_high_inventory=False
+)
+```
+
+### Delay Plan (via api_automation.py)
+```python
+from api_automation import run_month_delay_flow
+
+result = run_month_delay_flow(
+    submitter_token="your_submitter_token",
+    approver_token="your_approver_token",
+    excel_file_path="path/to/delay_plan.xlsx",
+    environment="qa"  # or "uat"
 )
 ```
 
 ## Parameters
 
+### For hch_skill.execute_import() (Task Order & Monthly Demand)
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | submitter_token | Yes | JWT token for submitter account |
 | approver_token | Yes | JWT token for approver account |
-| import_type | Yes | "task_order", "monthly_demand", or "delay_plan" |
+| import_type | Yes | "task_order" or "month_demand" (NOT "delay_plan") |
 | file_path | No | Local Excel file path |
 | file_base64 | No | Base64 encoded file content |
 | filename | No | Filename (required when using file_base64) |
 | check_high_inventory | No | Enable high inventory risk detection (default: false) |
+
+### For api_automation.run_month_delay_flow() (Delay Plan)
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| submitter_token | Yes | JWT token for submitter account |
+| approver_token | Yes | JWT token for approver account |
+| excel_file_path | No | Local Excel file path (defaults to config) |
 | environment | No | Target environment: "qa" (default) or "uat" |
+
+### For api_automation.run_month_demand_flow() (High Inventory Import)
+| Additional Parameter | Description |
+|---------------------|-------------|
+| check_high_inventory_flag | Enable high inventory check |
+| high_inventory_id | High inventory material ID (for specific material import) |
+| inventory_snapshot_id | Inventory snapshot ID |
+| high_inventory_remark | High inventory remark |
 
 ## Execution Flow
 
 ### Task Order & Monthly Demand (8 steps)
-1. **Login** - Authenticate with HCH system
-2. **Get Upload Token** - Obtain file upload authorization
-3. **Upload File** - Upload Excel template
-4. **Submit for Approval** - Submit the uploaded data
-5. **Get Approval ID** - Retrieve approval task ID
-6. **Approve** - Execute approval action
-7. **Confirm Approval** - Verify approval status
-8. **Check Inventory** - Optional high inventory risk check
+1. **Import File** - Upload Excel file via `import_month_sale_plan()` (planImportType=1 for task order, 0 for monthly demand)
+2. **Get Latest Record** - Query latest imported record with time filtering via `get_latest_input_order_no()`
+3. **Submit Production Plan** - Submit production plan via `push_production_plan()`
+4. **Switch to Approver** - Switch user role to approver via `switch_user("approver")`
+5. **Submit Sale Approval** - Submit to sale approval via `submit_to_sale_audit()`
+6. **Get Approval ID** - Retrieve latest approval task ID via `get_latest_audit_order()`
+7. **Execute Approval** - Execute approval action via `approve_sale_audit()`
+8. **Push to Purchase** - Push to purchase system via `push_month_plan_to_purchase()`
 
 ### Delay Plan (4 steps) - Simplified Workflow
 1. **Import Delay Plan** - Upload delay plan Excel file (`/month-delay-plan/import`)
@@ -97,11 +125,12 @@ result = execute_import(
 
 ### Delay Plan Import (QA Environment)
 ```python
-result = execute_import(
+from api_automation import run_month_delay_flow
+
+result = run_month_delay_flow(
     submitter_token="sub_token_here",
     approver_token="app_token_here",
-    import_type="delay_plan",
-    file_path="F:/templates/顺延计划导入模板.xlsx",
+    excel_file_path="F:/templates/顺延计划导入模板.xlsx",
     environment="qa"
 )
 ```
@@ -186,7 +215,7 @@ Configure the environment in the `automation_config.json` file or pass it as a p
 - File format: Must match HCH system template requirements
 - Network: Ensure API endpoints are accessible
 - Testing: Validate in test environment before production use
-- High inventory: Detection only available for monthly_demand imports
+- High inventory: Supports both automatic detection and manual material specification (high_inventory_id, inventory_snapshot_id)
 - **Delay plan workflow**: Simplified 4-step process, no approval required
 - **Delay plan template**: Requires `./顺延计划导入模板.xlsx` file
 
