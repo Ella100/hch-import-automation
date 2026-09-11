@@ -1,0 +1,19 @@
+# 本地真实配置（含 Token），不要提交、不要打包
+automation_config.json
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 运行时产生的上传临时文件
+temp_uploads/
+
+# 打包产物
+*.zip
+
+# 导入用的 Excel 模板（各人本地自备，含业务数据）
+*.xlsx
+
+# 打包/上传脚本仅本地使用，不入库
+*.ps1
+*.bat
