@@ -22,13 +22,22 @@ This skill also covers the **Commercial Order Machine (商用订单机)** end-to
 
 ## First-time Setup（首次配置）
 
-`automation_config.json` **不在仓库里**（已被 `.gitignore` 忽略，且打包 zip 时也被排除），因为它保存 Token。
+技能包内**不含** `automation_config.json`，也不含 Excel 模板 —— 前者保存 Token，后者含业务数据，二者均已被忽略、不随包分发。
 
-```bash
-cp automation_config.example.json automation_config.json   # ① 生成本地配置
-#                                                          # ② 编辑填入自己的 Token
-pip install requests openpyxl                              # ③ 安装依赖
-```
+1. **解压到任意本地目录**：脚本、配置、模板放同一个目录即可。配置与默认模板路径都按**脚本所在目录**解析（`resolve_template_path()`），因此与当前工作目录无关。
+2. **安装依赖**：
+   ```bash
+   pip install requests openpyxl
+   ```
+3. **生成本地配置**：
+   ```bash
+   cp automation_config.example.json automation_config.json
+   ```
+4. **自备 Excel 导入模板**：`任务单导入模板.xlsx` / `销售月需求导入模板.xlsx` / `顺延计划导入模板.xlsx` 放到技能目录下。文件名或位置不同时，改 `automation_config.json` 里的 `default_excel_files` 即可。
+5. **网络要求**：需能访问内网系统（`*.gree.com`，QA `:9002` / UAT `:9108`）。请在办公网内、或连好 VPN 之后再运行。
+6. 填入 Token（见下）。
+
+> 若运行环境（如智能体沙箱）**读不到技能安装目录**，请把技能包另存到可读目录，并在调用时使用该目录下的脚本绝对路径。
 
 ### 怎么获取 Token
 

@@ -8,7 +8,7 @@ HCH API自动化命令行工具
 import sys
 import os
 import json
-from api_automation import HCHAPIAutomation, run_task_order_flow, run_month_demand_flow, run_month_delay_flow
+from api_automation import HCHAPIAutomation, run_task_order_flow, run_month_demand_flow, run_month_delay_flow, resolve_template_path
 from order_machine_skill import (
     execute_order_machine,
     list_material_top_codes,
@@ -53,9 +53,9 @@ def execute_import_only(file_path=None, plan_type=1, check_inventory=False):
     if file_path is None:
         # 使用默认文件
         if plan_type == 1:
-            file_path = "./任务单导入模板.xlsx"
+            file_path = resolve_template_path("./任务单导入模板.xlsx")
         else:
-            file_path = "./销售月需求导入模板.xlsx"
+            file_path = resolve_template_path("./销售月需求导入模板.xlsx")
     
     print(f"\n执行导入操作:")
     print(f"  文件: {file_path}")

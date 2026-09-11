@@ -16,6 +16,20 @@ def clean_token(value) -> str:
     return text
 
 
+def resolve_template_path(path: Optional[str]) -> str:
+    """把配置里的模板路径解析成可用路径（相对路径一律按「脚本所在目录」解析）。
+
+    这样无论从哪个工作目录调用，`./任务单导入模板.xlsx` 都能定位到技能目录下的同名文件；
+    绝对路径与空值原样返回。
+    """
+    if not path:
+        return path or ""
+    p = Path(path)
+    if p.is_absolute():
+        return str(p)
+    return str(Path(__file__).parent / p)
+
+
 class HCHAPIAutomation:
     """HCH系统API自动化操作类"""
     
@@ -81,6 +95,8 @@ class HCHAPIAutomation:
         else:
             # 旧配置格式
             self.default_excel_file = self.config.get("default_excel_file", "")
+        # 相对路径按脚本目录解析，避免依赖当前工作目录
+        self.default_excel_file = resolve_template_path(self.default_excel_file)
         
         # 设置请求头（根据环境动态设置Origin和Referer）
         self.headers = {
@@ -1543,7 +1559,7 @@ def run_task_order_flow(submitter_token=None, approver_token=None, excel_file_pa
         print(f"✓ 使用前端上传的文件: {task_file}")
     else:
         config_files = api.config.get("default_excel_files", {})
-        task_file = config_files.get("task_order", "./任务单导入模板.xlsx")
+        task_file = resolve_template_path(config_files.get("task_order", "./任务单导入模板.xlsx"))
         print(f"⚠ 使用配置文件中的文件: {task_file}")
     
     # 步骤1: 导入任务单
@@ -1597,7 +1613,7 @@ def run_month_delay_flow(submitter_token=None, approver_token=None, excel_file_p
         print(f"✓ 使用前端上传的文件: {month_file}")
     else:
         config_files = api.config.get("default_excel_files", {})
-        month_file = config_files.get("month_delay", "./顺延计划导入模板.xlsx")
+        month_file = resolve_template_path(config_files.get("month_delay", "./顺延计划导入模板.xlsx"))
         print(f"⚠ 使用配置文件中的文件: {month_file}")
     
     # 步骤1: 导入顺延计划
@@ -1765,7 +1781,7 @@ def run_month_demand_flow(submitter_token=None, approver_token=None, excel_file_
         print(f"✓ 使用前端上传的文件: {month_file}")
     else:
         config_files = api.config.get("default_excel_files", {})
-        month_file = config_files.get("month_demand", "./销售月需求导入模板.xlsx")
+        month_file = resolve_template_path(config_files.get("month_demand", "./销售月需求导入模板.xlsx"))
         print(f"⚠ 使用配置文件中的文件: {month_file}")
     
     # 步骤1: 导入销售月需求
