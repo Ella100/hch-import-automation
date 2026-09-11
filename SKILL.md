@@ -1,6 +1,6 @@
 ---
 name: hch-import-automation
-description: Automate HCH system workflows. (1) Data import for task orders, monthly demand plans, and delay plans with multi-environment support (QA/UAT). (2) Commercial order machine (商用订单机): submit order, client/manager approval, production scheduling, and HCH order-machine processing (adjust, allocate base, transfer plan, push sale plan no) on qasalescloud + ds-oms.
+description: 'Automate HCH system workflows. (1) Data import for task orders, monthly demand plans, and delay plans with multi-environment support (QA/UAT). (2) Commercial order machine (商用订单机): submit order, client/manager approval, production scheduling, and HCH order-machine processing (adjust, allocate base, transfer plan, push sale plan no) on qasalescloud + ds-oms.'
 category: Automation
 user-invocable: true
 ---

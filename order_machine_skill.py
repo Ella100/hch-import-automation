@@ -382,7 +382,7 @@ def get_skill_info() -> Dict[str, Any]:
     return {
         "name": "hch_order_machine",
         "version": "1.0.0",
-        "description": "格力商用订单机自动化：提交订单 → 客户端审批 → 管理端审批 → 提交排产 → HCH 订单机处理（调整/分配基地/转生产计划/推送销售计划号）",
+        "description": "商用订单机自动化：提交订单 → 客户端审批 → 管理端审批 → 提交排产 → HCH 订单机处理（调整/分配基地/转生产计划/推送销售计划号）",
         "functions": [
             {
                 "name": "execute_order_machine",
