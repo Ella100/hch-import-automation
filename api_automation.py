@@ -46,7 +46,19 @@ class HCHAPIAutomation:
             # 获取脚本所在目录
             script_dir = Path(__file__).parent
             config_path = script_dir / "automation_config.json"
-        
+
+        # 配置文件不存在时，自动从同目录的 automation_config.example.json 生成一份
+        # （使用者无需手动改名，填 Token 即可）
+        try:
+            cfg_path = Path(config_path)
+            if not cfg_path.exists():
+                example = cfg_path.parent / "automation_config.example.json"
+                if example.exists():
+                    cfg_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+                    print(f"ℹ 已自动生成配置文件：{cfg_path}\n  请填入 Token 后重试。")
+        except Exception as e:
+            print(f"⚠️ 自动生成配置失败（可手动复制 automation_config.example.json）: {e}")
+
         # 读取配置文件
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = json.load(f)['api_config']

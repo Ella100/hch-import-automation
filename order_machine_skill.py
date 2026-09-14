@@ -219,9 +219,34 @@ def _err(message: str, **extra) -> Dict[str, Any]:
     return result
 
 
+def _ensure_config_file(path: str) -> None:
+    """目标配置文件不存在时，从同目录的 automation_config.example.json 自动生成一份。
+
+    这样使用者解压后无需手动改名，直接填 Token 即可。
+    """
+    try:
+        if os.path.exists(path):
+            return
+        example = os.path.join(os.path.dirname(os.path.abspath(path)),
+                               "automation_config.example.json")
+        if not os.path.exists(example):
+            return
+        with open(example, "r", encoding="utf-8") as f:
+            content = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"ℹ 已自动生成配置文件：{path}\n  请填入 Token 后重试。")
+    except Exception as e:
+        print(f"⚠️ 自动生成配置失败（可手动复制 automation_config.example.json）: {e}")
+
+
 def _load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
-    """读取 automation_config.json（缺省与技能同目录）。"""
+    """读取 automation_config.json（缺省与技能同目录）。
+
+    文件不存在时自动从 automation_config.example.json 生成一份（无需手动改名）。
+    """
     path = config_path or CONFIG_PATH
+    _ensure_config_file(path)
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -330,6 +355,7 @@ def execute_order_machine(
     base: Optional[str] = None,
     base_map: Optional[Dict[str, str]] = None,
     instruction: Optional[str] = None,
+    ware_codes: Union[str, List[str], None] = None,
     environment: str = "qa",
     stages: str = "all",
     order_no: Optional[str] = None,
@@ -350,6 +376,7 @@ def execute_order_machine(
         base_map: {顶码: 基地} 形式，按顶码指定基地
         instruction: 自然语言整句，自动抽取顶码/基地/数量，如
                      "物料顶码ZN62105A 珠海基地数量10、LJ71147520 长沙基地数量5"
+        ware_codes: 未指定基地的行从哪些基地里随机；缺省按 环境变量 HCH_WARE_CODES → 内置 15 个基地 取
         environment: 目标环境 "qa"（默认）/ "uat"（仅影响 HCH 基址）
         stages: all=全链路(默认) | submit=仅下单 | approve=仅审批 | schedule=仅排产 | hch=仅 HCH
         order_no: 已有订单号（stages=approve/schedule/hch 时必填）
@@ -372,6 +399,9 @@ def execute_order_machine(
 
     cfg = _load_config(config_path)
     env = _apply_environment(environment, cfg)
+    # 随机基地池：显式入参 > 环境变量 HCH_WARE_CODES > 内置全量 15 个（后两者由引擎侧决定）
+    if isinstance(ware_codes, str):
+        ware_codes = [c for c in re.split(r"[,，\s]+", ware_codes) if c]
     c_token, m_token, h_token = _resolve_tokens(cfg, client_token, manager_token, hch_token)
     stage = _normalize_stage(stages)
     codes = _split_codes(top_codes)
@@ -404,6 +434,7 @@ def execute_order_machine(
                 result_sink=sink,
                 quantities=quantities,
                 ware_map=ware_map,
+                ware_codes=ware_codes,
             )
         elif stage == "approve":
             if not order_no:
@@ -432,7 +463,7 @@ def execute_order_machine(
             if not h_token:
                 return _err("缺少 HCH 系统 Token")
             rc = 0 if run_hch_phase(HchApi(h_token), order_no, result_sink=sink,
-                                    ware_map=ware_map) else 1
+                                    ware_map=ware_map, ware_codes=ware_codes) else 1
             sink["orders"] = [{"code": order_no}]
     except Exception as e:
         return _err(f"执行异常: {e}", error_details=str(e))
@@ -536,6 +567,8 @@ def get_skill_info() -> Dict[str, Any]:
                                  "description": "{顶码: 基地} 按顶码指定基地"},
                     "instruction": {"type": "string", "required": False,
                                     "description": "自然语言整句，自动抽取顶码/基地/数量"},
+                    "ware_codes": {"type": "array", "required": False,
+                                   "description": "未指定基地的行随机候选（缺省读配置/环境变量/内置 15 个）"},
                     "environment": {"type": "string", "required": False, "default": "qa"},
                     "stages": {"type": "string", "required": False, "default": "all",
                                "enum": ["all", "submit", "approve", "schedule", "hch"]},

@@ -573,14 +573,15 @@ def hch_push_sale_plan_no(api, sale_plan_no):
     return bool(res.get("success"))
 
 
-def run_hch_phase(api, order_code, result_sink=None, ware_map=None):
+def run_hch_phase(api, order_code, result_sink=None, ware_map=None, ware_codes=None):
     """对单个订单执行 HCH 订单机处理全流程。返回是否成功。
 
     明细几行就 adjust 几次、再 allocate-base 几次（每行各一次），随后转生产计划、
     查询月生产计划并推送其 salePlanNo。
     result_sink: 可选 dict，回填 hch（行数 / 分配的基地 / 推送的 salePlanNo）。
     ware_map: 可选 dict {顶码: wareCode}，为指定顶码固定基地；键 "*" 表示整单统一。
-              未在 ware_map 中的行仍从 HCH_WARE_CODES 随机取。
+              未在 ware_map 中的行仍从 ware_codes 随机取。
+    ware_codes: 可选，随机候选（缺省用模块级 HCH_WARE_CODES）。
     """
     # 1) 查询明细
     rows = []
@@ -595,6 +596,11 @@ def run_hch_phase(api, order_code, result_sink=None, ware_map=None):
         log(f"    ✗ HCH 未查询到订单 {order_code} 的明细")
         return False
     log(f"    ✓ 查到 {len(rows)} 行明细，逐行调整并分配基地...")
+    if ware_map:
+        log("    ℹ 指定基地: " + ", ".join(f"{k}→{v}" for k, v in ware_map.items()))
+    pool = ware_codes or HCH_WARE_CODES
+    log(f"    ℹ 随机池({len(pool)}): {' '.join(pool)}"
+        + ("（来自 ware_codes 入参/配置）" if ware_codes else "（默认：环境变量 HCH_WARE_CODES 或内置全量）"))
 
     # 2) 逐行 adjust
     failed = 0
@@ -622,7 +628,7 @@ def run_hch_phase(api, order_code, result_sink=None, ware_map=None):
         specified = None
         if ware_map:
             specified = ware_map.get(top_code) or ware_map.get("*")
-        ware_code = specified or random.choice(HCH_WARE_CODES)
+        ware_code = specified or random.choice(ware_codes or HCH_WARE_CODES)
         source = "指定" if specified else "随机"
         try:
             if hch_allocate_base(api, r, ware_code):
@@ -684,13 +690,14 @@ def run_hch_phase(api, order_code, result_sink=None, ware_map=None):
 
 def submit_order(token, codes, manager_token=None, hch_token=None, project_code=None,
                  delivery_days=None, now=None, stop_after=None, result_sink=None, quantities=None,
-                 ware_map=None):
+                 ware_map=None, ware_codes=None):
     """执行提交订单 + 客户端审批 + 管理端审批 + 提交排产 + HCH 订单机处理。返回 0=成功，1=失败。
 
     stop_after: "submit" 时仅执行到提交订单（步骤 6）即返回，用于"只下单不审批"。
     result_sink: 可选 dict，执行过程中回填结构化结果（orders / salePlanNos），供技能层使用。
     quantities: 可选，与 codes 一一对应的数量；缺省时取物料列表项的 num。
     ware_map: 可选，{顶码: wareCode} 指定分配基地（键 "*" 表示整单统一）；缺省随机。
+    ware_codes: 可选，未指定基地时的随机候选（缺省用模块级 HCH_WARE_CODES）。
     """
     project_code = project_code or PROJECT_CODE
     quantities_override = quantities
@@ -910,7 +917,8 @@ def submit_order(token, codes, manager_token=None, hch_token=None, project_code=
         code = o.get("code")
         log(f"  → 订单 {code} HCH 处理...")
         try:
-            if not run_hch_phase(hch_api, code, result_sink=result_sink, ware_map=ware_map):
+            if not run_hch_phase(hch_api, code, result_sink=result_sink, ware_map=ware_map,
+                                 ware_codes=ware_codes):
                 failed += 1
         except Exception as e:
             log(f"  ✗ HCH 处理异常 [{code}]: {e}")

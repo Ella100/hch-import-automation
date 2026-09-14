@@ -29,7 +29,7 @@ This skill also covers the **Commercial Order Machine (商用订单机)** end-to
    ```bash
    pip install requests openpyxl
    ```
-3. **生成本地配置**：
+3. **生成配置**：**第一次运行时程序会自动生成 `automation_config.json`**（内容取自 `automation_config.example.json`），看到提示后填入自己的 Token 即可 —— **不需要手动改名**。也可以提前手动复制：
    ```bash
    cp automation_config.example.json automation_config.json
    ```
@@ -340,6 +340,7 @@ If a required slot is missing, ask the user (e.g. top_codes missing → show `li
 - 写法支持 `珠海基地` / `珠海` / `N50`（也接受其它编码原样透传，如 `N40A`）。
 - 三种给法：`bases=["珠海基地"]`（与顶码一一对应）、`base="珠海基地"`（整单统一）、`base_map={"MC20700060":"珠海基地"}`（按顶码）。
 - **只指定的顶码用指定基地，其余行仍随机**；日志会标明每行是「指定」还是「随机」。
+- 随机池默认是上面全量 15 个；要收窄就显式传 `ware_codes` 参数，或设环境变量 `HCH_WARE_CODES`。优先级：`ware_codes` 入参 > 环境变量 > 内置 15 个（随机池不读配置文件）。
 - 无法识别的基地名 → 直接报错，不会静默随机。
 
 ### `execute_order_machine()` parameters
