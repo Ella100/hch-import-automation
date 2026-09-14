@@ -38,9 +38,11 @@ import requests
 import order_machine
 from order_machine import (
     COMMODITY_GROUP_ID,
+    HCH_BASE_ALIASES,
     MANAGER_APPROVE_BUSINESS_DATA_JSON,
     HchApi,
     OrderMachineApi,
+    resolve_base_code,
     run_approval_phase,
     run_hch_phase,
     submit_order,
@@ -106,6 +108,105 @@ def _split_ints(value) -> Optional[List[int]]:
         return [int(v) for v in value]
     parts = [p for p in re.split(r"[,，、;；\s|]+", str(value)) if p.strip()]
     return [int(p) for p in parts]
+
+
+# ===== 分配基地：指定 / 自然语言解析 =====
+_CODE_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{4,}[A-Za-z0-9]*")        # 物料顶码
+_QTY_RE = re.compile(r"(?:数量|各|每个|下单量|下单)\s*[:：]?\s*(\d+)")      # "数量10"
+_BARE_QTY_RE = re.compile(r"(?<![A-Za-z0-9])(\d{1,6})(?![A-Za-z0-9])")    # 裸数字 "10"
+
+
+def _find_base(segment: str) -> Optional[str]:
+    """从片段里找基地：中文基地名优先，其次独立的基地编码（N50/N40A）。"""
+    compact = re.sub(r"\s+", "", segment)
+    for name in HCH_BASE_ALIASES:
+        if name in compact:
+            return name + "基地"
+    m = re.search(r"(?<![A-Za-z0-9])([A-Za-z]{1,2}\d{2,4}[A-Za-z]?)(?![A-Za-z0-9])", compact)
+    return m.group(1) if m else None
+
+
+def _find_qty(segment: str) -> Optional[int]:
+    """从片段里找数量："数量10" / "10个" / 裸数字。"""
+    m = _QTY_RE.search(segment)
+    if m:
+        return int(m.group(1))
+    m = _BARE_QTY_RE.search(segment)
+    return int(m.group(1)) if m else None
+
+
+def _find_code(segment: str) -> Optional[str]:
+    m = _CODE_TOKEN_RE.search(segment)
+    return m.group(0) if m else None
+
+
+def parse_order_instruction(text: str) -> Dict[str, Any]:
+    """从中文口语里抽取「顶码 / 基地 / 数量」。
+
+    例："物料顶码ZN62105A 珠海基地数量10、LJ71147520 长沙基地数量5"
+      → codes=['ZN62105A','LJ71147520'], bases=['珠海基地','长沙基地'], quantities=[10,5]
+    片段里只有基地、没有顶码时，视为「整单统一基地」，通过 base 返回。
+    """
+    codes: List[str] = []
+    bases: List[Optional[str]] = []
+    quantities: List[Optional[int]] = []
+    base_all = None
+    for seg in re.split(r"[、,，;；\n]+", str(text or "")):
+        seg = seg.strip()
+        if not seg:
+            continue
+        code = _find_code(seg)
+        base = _find_base(seg)
+        qty = _find_qty(seg)
+        if code:
+            codes.append(code)
+            bases.append(base)
+            quantities.append(qty)
+        elif base:
+            base_all = base
+    return {"codes": codes, "bases": bases, "quantities": quantities, "base": base_all}
+
+
+def _build_ware_map(codes: List[str], bases=None, base=None, base_map=None):
+    """把基地参数归一成 {顶码: wareCode}。返回 (ware_map, error)。
+
+    - base_map: {顶码: 基地}
+    - base: 整单统一基地（有 codes 就平铺，无 codes 用 "*" 通配）
+    - bases: 与 codes 一一对应
+    未覆盖到的行由引擎随机分配。
+    """
+    ware_map: Dict[str, str] = {}
+    if base_map:
+        if not isinstance(base_map, dict):
+            return None, "base_map 需为 {顶码: 基地} 形式的字典"
+        for key, val in base_map.items():
+            code = resolve_base_code(val)
+            if not code:
+                return None, f"无法识别的基地: {val}"
+            ware_map[str(key).strip()] = code
+    if base:
+        code = resolve_base_code(base)
+        if not code:
+            return None, f"无法识别的基地: {base}"
+        if codes:
+            for c in codes:
+                ware_map[c] = code
+        else:
+            ware_map["*"] = code
+    if bases:
+        bl = list(bases) if isinstance(bases, (list, tuple)) else [bases]
+        if not codes:
+            return None, "指定 bases 时需同时提供 top_codes"
+        if len(bl) != len(codes):
+            return None, f"基地个数({len(bl)})与顶码个数({len(codes)})不一致"
+        for c, b in zip(codes, bl):
+            if b is None or str(b).strip() == "":
+                continue
+            code = resolve_base_code(b)
+            if not code:
+                return None, f"无法识别的基地: {b}"
+            ware_map[c] = code
+    return ware_map, None
 
 
 def _now() -> str:
@@ -205,9 +306,14 @@ def _build_summary(stage: str, sink: Dict[str, Any]) -> Dict[str, Any]:
     if hch:
         rows = sum(int(v.get("rows") or 0) for v in hch.values())
         wares = [w for v in hch.values() for w in (v.get("wareCodes") or [])]
+        ware_map = {}
+        for v in hch.values():
+            ware_map.update(v.get("wareMap") or {})
         sale_nos = [n for v in hch.values() for n in (v.get("salePlanNos") or [])]
         summary["HCH 明细行数"] = rows
-        if wares:
+        if ware_map:
+            summary["分配基地"] = ", ".join(f"{k}→{v}" for k, v in ware_map.items())
+        elif wares:
             summary["分配基地"] = ", ".join(wares)
         if sale_nos:
             summary["已推送销售计划号"] = ", ".join(sale_nos)
@@ -220,6 +326,10 @@ def execute_order_machine(
     manager_token: Optional[str] = None,
     hch_token: Optional[str] = None,
     quantities: Union[str, List[int], None] = None,
+    bases: Union[str, List[Optional[str]], None] = None,
+    base: Optional[str] = None,
+    base_map: Optional[Dict[str, str]] = None,
+    instruction: Optional[str] = None,
     environment: str = "qa",
     stages: str = "all",
     order_no: Optional[str] = None,
@@ -234,6 +344,12 @@ def execute_order_machine(
         manager_token: 管理端 Token；缺省从本地配置读取，为空则跳过管理端审批与排产
         hch_token: HCH 系统 Token；缺省从本地配置读取，为空则跳过 HCH 段
         quantities: 与 top_codes 一一对应的数量；缺省取物料列表项的 num
+        bases: 分配基地，与 top_codes 一一对应；可用中文基地名（珠海基地/珠海）或编码（N50）；
+               某位传 None/空即该行随机
+        base: 整单统一基地（对所有行生效）
+        base_map: {顶码: 基地} 形式，按顶码指定基地
+        instruction: 自然语言整句，自动抽取顶码/基地/数量，如
+                     "物料顶码ZN62105A 珠海基地数量10、LJ71147520 长沙基地数量5"
         environment: 目标环境 "qa"（默认）/ "uat"（仅影响 HCH 基址）
         stages: all=全链路(默认) | submit=仅下单 | approve=仅审批 | schedule=仅排产 | hch=仅 HCH
         order_no: 已有订单号（stages=approve/schedule/hch 时必填）
@@ -243,12 +359,26 @@ def execute_order_machine(
     Returns:
         结构化结果字典（success / message / data / summary / timestamp）
     """
+    if instruction:
+        parsed = parse_order_instruction(instruction)
+        if not top_codes and parsed["codes"]:
+            top_codes = parsed["codes"]
+        if quantities is None and parsed["quantities"] and all(q is not None for q in parsed["quantities"]):
+            quantities = parsed["quantities"]
+        if bases is None and any(parsed["bases"]):
+            bases = parsed["bases"]
+        if base is None and parsed["base"]:
+            base = parsed["base"]
+
     cfg = _load_config(config_path)
     env = _apply_environment(environment, cfg)
     c_token, m_token, h_token = _resolve_tokens(cfg, client_token, manager_token, hch_token)
     stage = _normalize_stage(stages)
     codes = _split_codes(top_codes)
     quantities = _split_ints(quantities)
+    ware_map, ware_err = _build_ware_map(codes, bases=bases, base=base, base_map=base_map)
+    if ware_err:
+        return _err(ware_err)
     order_no = str(order_no).strip() if order_no else None
     sink: Dict[str, Any] = {}
 
@@ -273,6 +403,7 @@ def execute_order_machine(
                 stop_after=("submit" if stage == "submit" else None),
                 result_sink=sink,
                 quantities=quantities,
+                ware_map=ware_map,
             )
         elif stage == "approve":
             if not order_no:
@@ -300,7 +431,8 @@ def execute_order_machine(
                 return _err("缺少订单号（stages=hch 需提供 order_no）")
             if not h_token:
                 return _err("缺少 HCH 系统 Token")
-            rc = 0 if run_hch_phase(HchApi(h_token), order_no, result_sink=sink) else 1
+            rc = 0 if run_hch_phase(HchApi(h_token), order_no, result_sink=sink,
+                                    ware_map=ware_map) else 1
             sink["orders"] = [{"code": order_no}]
     except Exception as e:
         return _err(f"执行异常: {e}", error_details=str(e))
@@ -322,9 +454,13 @@ def execute_order_machine(
 
 def run_hch_by_order_no(order_no: str, hch_token: Optional[str] = None,
                         environment: str = "qa",
+                        base: Optional[str] = None,
+                        base_map: Optional[Dict[str, str]] = None,
+                        instruction: Optional[str] = None,
                         config_path: Optional[str] = None) -> Dict[str, Any]:
     """按订单号单独补跑 HCH 订单机流程（等价于 execute_order_machine(stages="hch")）。"""
     return execute_order_machine(order_no=order_no, stages="hch", hch_token=hch_token,
+                                 base=base, base_map=base_map, instruction=instruction,
                                  environment=environment, config_path=config_path)
 
 
@@ -393,6 +529,13 @@ def get_skill_info() -> Dict[str, Any]:
                     "manager_token": {"type": "string", "required": False, "description": "管理端 Token"},
                     "hch_token": {"type": "string", "required": False, "description": "HCH 系统 Token"},
                     "quantities": {"type": "array", "required": False, "description": "各物料数量"},
+                    "bases": {"type": "array", "required": False,
+                              "description": "分配基地，与 top_codes 一一对应（中文名或编码，如 珠海基地 / N50）"},
+                    "base": {"type": "string", "required": False, "description": "整单统一基地（对所有行生效）"},
+                    "base_map": {"type": "object", "required": False,
+                                 "description": "{顶码: 基地} 按顶码指定基地"},
+                    "instruction": {"type": "string", "required": False,
+                                    "description": "自然语言整句，自动抽取顶码/基地/数量"},
                     "environment": {"type": "string", "required": False, "default": "qa"},
                     "stages": {"type": "string", "required": False, "default": "all",
                                "enum": ["all", "submit", "approve", "schedule", "hch"]},
@@ -414,6 +557,11 @@ def get_skill_info() -> Dict[str, Any]:
             {"description": "一键全链路下单", "code": 'execute_order_machine(top_codes=["KM500N1720"])'},
             {"description": "只下单不审批", "code": 'execute_order_machine(top_codes=["KM500N1720"], stages="submit")'},
             {"description": "按订单号补跑 HCH", "code": 'execute_order_machine(order_no="102609102700004", stages="hch")'},
+            {"description": "指定基地（与顶码一一对应）",
+             "code": 'execute_order_machine(top_codes=["ZN62105A"], quantities=[10], bases=["珠海基地"])'},
+            {"description": "整单统一基地", "code": 'execute_order_machine(top_codes=["ZN62105A"], base="珠海基地")'},
+            {"description": "自然语言整句",
+             "code": 'execute_order_machine(instruction="物料顶码ZN62105A 珠海基地数量10")'},
             {"description": "查看可下单物料", "code": "list_material_top_codes()"},
         ],
     }

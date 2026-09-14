@@ -15,7 +15,7 @@
  10. HCH 订单机处理（HCH 系统 Token，ds-oms.gree.com:9002）：
        order-machine/page-detail       按订单号查询明细（几行就处理几行）
         order-machine/adjust            逐行调整（selectionSystem / adjustRemarks 固定值）
-        order-machine/allocate-base     逐行分配基地（wareCode 从候选基地随机）
+        order-machine/allocate-base     逐行分配基地（wareCode 可指定，未指定则从候选基地随机）
         order-machine/transfer-plan     转生产计划
         month-production-plan/page      查询月生产计划 → salePlanNo
         month-production-plan/push-month-plan/sale-plan-no   推送 salePlanNo
@@ -29,12 +29,15 @@
   - customerName 取 token(JWT) 的 outletsName
   - 审批/提交排产：客户端审批用 COMMODITY_TOKEN；管理端审批与提交排产用 MANAGER_TOKEN
   - HCH：用 HCH_TOKEN；adjust 的 selectionSystem=3、adjustRemarks="测试" 为固定值；
-    allocate-base 的 wareCode 从 HCH_WARE_CODES（N45/N46/N48/N50/N55）随机取
+    allocate-base 的 wareCode 默认从 HCH_WARE_CODES（默认 = 全量 15 个基地）随机取，
+    也可通过 ware_map（{顶码: wareCode}，键 "*" 表示整单统一）指定基地；
+    基地名 → 编码 用 resolve_base_code()（如 "珠海基地" → N50）
 """
 import base64
 import json
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -79,10 +82,55 @@ HCH_REFERER_ORDER_MACHINE = HCH_BASE + "/hch/salesPlan/orderMachineManage"
 HCH_REFERER_MONTH_PLAN = HCH_BASE + "/hch/productionPlan/productionMonthPlan"
 HCH_SELECTION_SYSTEM = int(os.environ.get("HCH_SELECTION_SYSTEM", "3"))  # adjust 固定值
 HCH_ADJUST_REMARKS = os.environ.get("HCH_ADJUST_REMARKS", "测试")        # adjust 固定值
-HCH_WARE_CODES = [c for c in (os.environ.get("HCH_WARE_CODES") or "N45 N46 N48 N50 N55").split() if c]
+# 分配基地：基地名 → wareCode
+# HCH 订单机「分配基地」下拉的全量基地（共 15 个）—— 也是唯一来源：
+# 指定基地用 resolve_base_code()，未指定时的随机候选直接取该表的值。
+HCH_BASE_ALIASES = {
+    "金湾": "N39",
+    "赣州": "N40A",
+    "临沂": "N40B",
+    "成都": "N41",
+    "南京": "N45",
+    "洛阳": "N46",
+    "杭州": "N47",
+    "长沙": "N48",
+    "芜湖": "N49",
+    "珠海": "N50",
+    "郑州": "N51",
+    "武汉": "N52",
+    "石家庄": "N53",
+    "重庆": "N54",
+    "合肥": "N55",
+}
+
+# 未指定基地时的随机候选：默认全量基地，可用环境变量 HCH_WARE_CODES 覆盖
+HCH_WARE_CODES = ([c for c in (os.environ.get("HCH_WARE_CODES") or "").split() if c]
+                  or list(HCH_BASE_ALIASES.values()))
 HCH_PAGE_SIZE = int(os.environ.get("HCH_PAGE_SIZE", "50"))
 HCH_RETRIES = int(os.environ.get("HCH_RETRIES", "5"))
 HCH_RETRY_WAIT = float(os.environ.get("HCH_RETRY_WAIT", "2"))
+
+
+def resolve_base_code(text):
+    """把基地写法统一成 wareCode。
+
+    - None / 空 → None
+    - 命中内置基地名字典（"珠海基地" / "珠海"）→ 对应编码（"N50"）
+    - 形如独立编码（"N50" / "N40A"）→ 原样大写返回
+    - 其它 → None（由调用方报错）
+    """
+    if text is None:
+        return None
+    compact = re.sub(r"\s+", "", str(text))
+    if not compact:
+        return None
+    for name, code in HCH_BASE_ALIASES.items():
+        if name in compact:
+            return code
+    m = re.search(r"(?<![A-Za-z0-9])([A-Za-z]{1,2}\d{2,4}[A-Za-z]?)(?![A-Za-z0-9])", compact)
+    if m:
+        return m.group(1).upper()
+    return None
 
 # 提交订单时每行物料的完整字段模板（与前端抓包一致，动态字段随后覆盖）
 COMMODITY_TEMPLATE = {
@@ -481,7 +529,7 @@ def hch_adjust(api, row):
 
 
 def hch_allocate_base(api, row, ware_code):
-    """逐行分配基地（order-machine/allocate-base，JSON）。wareCode 由调用方随机选取。"""
+    """逐行分配基地（order-machine/allocate-base，JSON）。wareCode 由调用方决定（指定或随机）。"""
     payload = {
         "detailId": row.get("id"),
         "sourceOrderItemNo": row.get("sourceOrderItemNo"),
@@ -525,12 +573,14 @@ def hch_push_sale_plan_no(api, sale_plan_no):
     return bool(res.get("success"))
 
 
-def run_hch_phase(api, order_code, result_sink=None):
+def run_hch_phase(api, order_code, result_sink=None, ware_map=None):
     """对单个订单执行 HCH 订单机处理全流程。返回是否成功。
 
     明细几行就 adjust 几次、再 allocate-base 几次（每行各一次），随后转生产计划、
     查询月生产计划并推送其 salePlanNo。
     result_sink: 可选 dict，回填 hch（行数 / 分配的基地 / 推送的 salePlanNo）。
+    ware_map: 可选 dict {顶码: wareCode}，为指定顶码固定基地；键 "*" 表示整单统一。
+              未在 ware_map 中的行仍从 HCH_WARE_CODES 随机取。
     """
     # 1) 查询明细
     rows = []
@@ -563,15 +613,24 @@ def run_hch_phase(api, order_code, result_sink=None):
         log(f"    ✗ {failed}/{len(rows)} 行调整未完成，终止 HCH 流程")
         return False
 
-    # 3) 逐行 allocate-base（基地随机）
+    # 3) 逐行 allocate-base（指定基地优先，否则随机）
     failed = 0
     wares = []
+    ware_used = {}
     for r in rows:
-        ware_code = random.choice(HCH_WARE_CODES)
+        top_code = str(r.get("topCode") or "")
+        specified = None
+        if ware_map:
+            specified = ware_map.get(top_code) or ware_map.get("*")
+        ware_code = specified or random.choice(HCH_WARE_CODES)
+        source = "指定" if specified else "随机"
         try:
             if hch_allocate_base(api, r, ware_code):
-                log(f"      ✓ 分配基地 item={r.get('sourceOrderItemNo')} → {ware_code}")
+                log(f"      ✓ 分配基地 item={r.get('sourceOrderItemNo')} "
+                    f"topCode={top_code} → {ware_code}（{source}）")
                 wares.append(ware_code)
+                if top_code:
+                    ware_used[top_code] = ware_code
             else:
                 log(f"      ✗ 分配基地失败 item={r.get('sourceOrderItemNo')}")
                 failed += 1
@@ -583,7 +642,8 @@ def run_hch_phase(api, order_code, result_sink=None):
         return False
 
     if result_sink is not None:
-        result_sink.setdefault("hch", {})[order_code] = {"rows": len(rows), "wareCodes": wares}
+        result_sink.setdefault("hch", {})[order_code] = {
+            "rows": len(rows), "wareCodes": wares, "wareMap": ware_used}
 
     # 4) 转生产计划
     detail_ids = []
@@ -623,12 +683,14 @@ def run_hch_phase(api, order_code, result_sink=None):
 
 
 def submit_order(token, codes, manager_token=None, hch_token=None, project_code=None,
-                 delivery_days=None, now=None, stop_after=None, result_sink=None, quantities=None):
+                 delivery_days=None, now=None, stop_after=None, result_sink=None, quantities=None,
+                 ware_map=None):
     """执行提交订单 + 客户端审批 + 管理端审批 + 提交排产 + HCH 订单机处理。返回 0=成功，1=失败。
 
     stop_after: "submit" 时仅执行到提交订单（步骤 6）即返回，用于"只下单不审批"。
     result_sink: 可选 dict，执行过程中回填结构化结果（orders / salePlanNos），供技能层使用。
     quantities: 可选，与 codes 一一对应的数量；缺省时取物料列表项的 num。
+    ware_map: 可选，{顶码: wareCode} 指定分配基地（键 "*" 表示整单统一）；缺省随机。
     """
     project_code = project_code or PROJECT_CODE
     quantities_override = quantities
@@ -848,7 +910,7 @@ def submit_order(token, codes, manager_token=None, hch_token=None, project_code=
         code = o.get("code")
         log(f"  → 订单 {code} HCH 处理...")
         try:
-            if not run_hch_phase(hch_api, code, result_sink=result_sink):
+            if not run_hch_phase(hch_api, code, result_sink=result_sink, ware_map=ware_map):
                 failed += 1
         except Exception as e:
             log(f"  ✗ HCH 处理异常 [{code}]: {e}")

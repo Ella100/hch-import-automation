@@ -7,6 +7,7 @@ HCH API自动化命令行工具
 
 import sys
 import os
+import re
 import json
 from api_automation import HCHAPIAutomation, run_task_order_flow, run_month_demand_flow, run_month_delay_flow, resolve_template_path
 from order_machine_skill import (
@@ -44,6 +45,12 @@ def show_help():
     print("  python hch_cli.py order --codes KM500N1720,MC20700060")
     print("  python hch_cli.py order --stage submit --codes KM500N1720")
     print("  python hch_cli.py order --stage hch --order-no 102609102700004")
+    print("\n商用订单机 - 指定分配基地:")
+    print("  --base 名称              整单统一基地（如 --base 珠海基地）")
+    print("  --bases a,b              与 --codes 一一对应的基地（如 --bases 珠海基地,长沙）")
+    print("  --base-map 顶码:基地,...  按顶码指定（如 --base-map MC20700060:南京基地）")
+    print("  --instruction \"整句\"      自然语言整句（如 --instruction \"物料顶码ZN62105A 珠海基地数量10\"）")
+    print("  未指定的行从全量 15 个基地随机（金湾/赣州/临沂/成都/南京/洛阳/杭州/长沙/芜湖/珠海/郑州/武汉/石家庄/重庆/合肥）")
 
 
 def execute_import_only(file_path=None, plan_type=1, check_inventory=False):
@@ -117,6 +124,10 @@ def main():
         order_no = None
         environment = "qa"
         quantities = None
+        base = None
+        bases = None
+        base_map = None
+        instruction = None
         do_list = False
 
         i = 2
@@ -137,18 +148,36 @@ def main():
             elif arg == "--qty" and i + 1 < len(sys.argv):
                 quantities = [int(x) for x in sys.argv[i + 1].split(",") if x.strip()]
                 i += 2
+            elif arg == "--base" and i + 1 < len(sys.argv):
+                base = sys.argv[i + 1]
+                i += 2
+            elif arg == "--bases" and i + 1 < len(sys.argv):
+                bases = [b.strip() for b in sys.argv[i + 1].split(",") if b.strip()]
+                i += 2
+            elif arg == "--base-map" and i + 1 < len(sys.argv):
+                base_map = {}
+                for pair in sys.argv[i + 1].split(","):
+                    if ":" in pair or "：" in pair:
+                        k, v = re.split(r"[:：]", pair, maxsplit=1)
+                        if k.strip() and v.strip():
+                            base_map[k.strip()] = v.strip()
+                i += 2
+            elif arg == "--instruction" and i + 1 < len(sys.argv):
+                instruction = sys.argv[i + 1]
+                i += 2
             elif arg == "--list":
                 do_list = True
                 i += 1
             else:
                 i += 1
 
-        if do_list or (not codes and not order_no):
+        if do_list or (not codes and not order_no and not instruction):
             result = list_material_top_codes(environment=environment)
         else:
             result = execute_order_machine(
                 top_codes=codes, quantities=quantities, stages=stage,
-                order_no=order_no, environment=environment)
+                order_no=order_no, environment=environment,
+                base=base, bases=bases, base_map=base_map, instruction=instruction)
 
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):

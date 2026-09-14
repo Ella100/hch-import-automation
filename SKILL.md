@@ -277,7 +277,7 @@ One-shot commercial order flow across **two systems**, driven by natural languag
 7. Client approval (`completeTask`, client token)
 8. Manager approval (`completeTask`, manager token)
 9. Submit production scheduling (`salesApproval/submit`, manager token)
-10. HCH order-machine processing (HCH token): `page-detail` → `adjust` (per row) → `allocate-base` (per row, random warehouse) → `transfer-plan` → `month-production-plan/page` → push `sale-plan-no`
+10. HCH order-machine processing (HCH token): `page-detail` → `adjust` (per row) → `allocate-base` (per row — 指定的基地，未指定则随机) → `transfer-plan` → `month-production-plan/page` → push `sale-plan-no`
 
 ### Tokens & systems
 
@@ -311,6 +311,10 @@ Tokens may also be passed per call (explicit argument overrides config). Never e
 | 订单 102609102700004 做审批 | `execute_order_machine(order_no="102609102700004", stages="approve")` |
 | 订单 102609102700004 提交排产 | `execute_order_machine(order_no="102609102700004", stages="schedule")` |
 | 在 UAT 环境跑 | add `environment="uat"` |
+| 物料顶码ZN62105A 珠海基地数量10 | `execute_order_machine(instruction="物料顶码ZN62105A 珠海基地数量10")` |
+| 用 LJ71147520 下单，分珠海基地，数量10 | `execute_order_machine(top_codes=["LJ71147520"], quantities=[10], bases=["珠海基地"])` |
+| 这单全部放长沙基地 | `execute_order_machine(top_codes=[...], base="长沙基地")` |
+| 订单 102609102700004 补跑HCH：MC20700060 分南京基地 | `execute_order_machine(order_no="102609102700004", stages="hch", base_map={"MC20700060":"南京基地"})` |
 
 > **顶码可以从整句话里抽**：`top_codes` 既接受列表，也接受字符串
 > （`"MC20700060、LJ71147520"`、`"物料顶码MC20700060,LJ71147520"` 都能解析）。
@@ -321,6 +325,23 @@ Token 不需要在对话里出现 —— 只填 `automation_config.json`，`exec
 
 If a required slot is missing, ask the user (e.g. top_codes missing → show `list_material_top_codes()` options first).
 
+### 指定分配基地（基地字典）
+
+`allocate-base` 逐行分配，行以**顶码**标识。**未指定时从下表全量 15 个基地随机**；你也可以指定。基地名 → `wareCode` 内置字典（HCH 订单机「分配基地」下拉的**全量 15 个基地**）：
+
+| 基地 | wareCode | 基地 | wareCode | 基地 | wareCode |
+|------|----------|------|----------|------|----------|
+| 金湾 | `N39` | 成都 | `N41` | 杭州 | `N47` |
+| 赣州 | `N40A` | 南京 | `N45` | 长沙 | `N48` |
+| 临沂 | `N40B` | 洛阳 | `N46` | 芜湖 | `N49` |
+| 珠海 | `N50` | 郑州 | `N51` | 武汉 | `N52` |
+| 石家庄 | `N53` | 重庆 | `N54` | 合肥 | `N55` |
+
+- 写法支持 `珠海基地` / `珠海` / `N50`（也接受其它编码原样透传，如 `N40A`）。
+- 三种给法：`bases=["珠海基地"]`（与顶码一一对应）、`base="珠海基地"`（整单统一）、`base_map={"MC20700060":"珠海基地"}`（按顶码）。
+- **只指定的顶码用指定基地，其余行仍随机**；日志会标明每行是「指定」还是「随机」。
+- 无法识别的基地名 → 直接报错，不会静默随机。
+
 ### `execute_order_machine()` parameters
 
 | Parameter | Required | Description |
@@ -330,6 +351,10 @@ If a required slot is missing, ask the user (e.g. top_codes missing → show `li
 | `manager_token` | No | manager token |
 | `hch_token` | No | HCH token |
 | `quantities` | No | quantities aligned with `top_codes` |
+| `bases` | No | 分配基地，与 `top_codes` 一一对应（中文名或编码）；某位留空该行随机 |
+| `base` | No | 整单统一基地（对所有行生效） |
+| `base_map` | No | `{顶码: 基地}` 按顶码指定基地 |
+| `instruction` | No | 自然语言整句，自动抽取顶码/基地/数量 |
 | `environment` | No | `qa` (default) or `uat` |
 | `stages` | No | `all` \| `submit` \| `approve` \| `schedule` \| `hch` (default `all`) |
 | `order_no` | Yes for `approve`/`schedule`/`hch` | existing order number |
@@ -342,10 +367,12 @@ If a required slot is missing, ask the user (e.g. top_codes missing → show `li
   "message": "商用订单机执行成功",
   "data": { "stage": "all", "environment": "qa",
             "orders": [{"code": "102609107100002", "id": 9960}],
-            "hch": {"102609107100002": {"rows": 3, "wareCodes": ["N48","N45","N50"], "salePlanNos": ["YX2026091102"]}} },
+            "hch": {"102609107100002": {"rows": 3, "wareCodes": ["N48","N45","N50"],
+                                        "wareMap": {"KM50001700":"N45","MC20700060":"N50"},
+                                        "salePlanNos": ["YX2026091102"]}} },
   "summary": { "订单号": "102609107100002", "提交订单": "成功", "客户端审批": "通过",
                "管理端审批": "通过", "提交排产": "成功", "HCH 明细行数": 3,
-               "分配基地": "N48, N45, N50", "已推送销售计划号": "YX2026091102" },
+               "分配基地": "KM50001700→N45, MC20700060→N50", "已推送销售计划号": "YX2026091102" },
   "timestamp": "2026-09-11T09:40:00"
 }
 ```
@@ -357,12 +384,17 @@ python hch_cli.py order --list                                   # 列出可下�
 python hch_cli.py order --codes KM500N1720,MC20700060            # 一键全链路
 python hch_cli.py order --stage submit --codes KM500N1720        # 只下单
 python hch_cli.py order --stage hch --order-no 102609102700004   # 按订单号补跑 HCH
+# 指定分配基地
+python hch_cli.py order --codes ZN62105A --qty 10 --bases 珠海基地
+python hch_cli.py order --codes ZN62105A --base 珠海基地
+python hch_cli.py order --stage hch --order-no X --base-map MC20700060:南京基地
+python hch_cli.py order --instruction "物料顶码ZN62105A 珠海基地数量10"
 ```
 
 ### Rules
 
 - `adjust` uses fixed `selectionSystem=3` and `adjustRemarks="测试"`.
-- `allocate-base` warehouse is randomly chosen from `N45/N46/N48/N50/N55`.
+- `allocate-base` 的基地：指定则用指定基地，未指定则从**全量 15 个基地随机**取（可用环境变量 `HCH_WARE_CODES` 收窄随机池）。
 - Missing manager/hch token → that segment is skipped (order submission and client approval still run).
 - The order number comes from `orderSubmit` response `data.orderList[].code`.
 
@@ -377,4 +409,5 @@ python hch_cli.py order --stage hch --order-no 102609102700004   # 按订单号�
 | 商用订单机: 缺少客户端 Token | Fill `api_config.order_machine.tokens.client` in `automation_config.json` |
 | 商用订单机: 缺少物料顶码 | Call `list_material_top_codes()` and let the user pick codes |
 | 商用订单机: HCH 查不到订单明细 | Order may not be scheduled yet; the skill retries (default 5×2s). Verify the order number and HCH token |
-| 商用订单机: 分配基地失败 | Check `failedList` in the `allocate-base` response; warehouse code must be one of N45/N46/N48/N50/N55 |
+| 商用订单机: 分配基地失败 | Check `failedList` in the `allocate-base` response; warehouse code must be one of the 15 built-in bases |
+| 商用订单机: 无法识别的基地 | 用内置的 15 个基地名（珠海/合肥/长沙/南京/洛阳/石家庄/金湾/赣州/临沂/成都/杭州/芜湖/郑州/武汉/重庆）或直接给 wareCode（`N50`、`N40A` 等） |
