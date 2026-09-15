@@ -15,6 +15,11 @@ from order_machine_skill import (
     list_material_top_codes,
     get_skill_info as get_order_skill_info,
 )
+from plan_month_skill import (
+    execute_plan_month,
+    list_plan_materials,
+    get_skill_info as get_plan_skill_info,
+)
 
 
 def print_banner():
@@ -33,6 +38,7 @@ def show_help():
     print("  month       - 执行月需求导入流程")
     print("  delay       - 执行顺延计划导入流程")
     print("  order       - 执行商用订单机流程（下单/审批/排产/HCH）")
+    print("  plan-month  - 执行商用月计划流程（生成销售计划单/审批/HCH 推送）")
     print("  import      - 仅执行导入操作")
     print("  status      - 查询导入状态")
     print("  help        - 显示此帮助信息")
@@ -51,6 +57,14 @@ def show_help():
     print("  --base-map 顶码:基地,...  按顶码指定（如 --base-map MC20700060:南京基地）")
     print("  --instruction \"整句\"      自然语言整句（如 --instruction \"物料顶码ZN62105A 珠海基地数量10\"）")
     print("  未指定的行从全量 15 个基地随机（金湾/赣州/临沂/成都/南京/洛阳/杭州/长沙/芜湖/珠海/郑州/武汉/石家庄/重庆/合肥）")
+    print("\n商用月计划:")
+    print("  python hch_cli.py plan-month --month 2026-09 --instruction \"KN850W5140 珠海基地10、洛阳基地20\"")
+    print("  python hch_cli.py plan-month --month 2026-09 --codes KN850W5140 --qty 10 --base 珠海基地")
+    print("  python hch_cli.py plan-month --month 2026-09 --list    # 只看该月预测单里的物料顶码")
+    print("  分段执行（--stage: all|plan|approve|hch|push）:")
+    print("  python hch_cli.py plan-month --stage hch --source-order-no JHY20260914001   # 给来源单号跑 HCH 后续")
+    print("  python hch_cli.py plan-month --stage approve --plan-code SP2026090001       # 补销售计划审批")
+    print("  python hch_cli.py plan-month --stage push --plan-no JHY20260914001          # 只推送采购（按前缀自动识别）")
 
 
 def execute_import_only(file_path=None, plan_type=1, check_inventory=False):
@@ -178,6 +192,80 @@ def main():
                 top_codes=codes, quantities=quantities, stages=stage,
                 order_no=order_no, environment=environment,
                 base=base, bases=bases, base_map=base_map, instruction=instruction)
+
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result.get("success"):
+            sys.exit(1)
+
+    elif command == "plan-month":
+        print_banner()
+        month = None
+        instruction = None
+        environment = "qa"
+        codes = None
+        quantities = None
+        bases = None
+        stage = None
+        plan_no = None
+        source_order_no = None
+        plan_code = None
+        do_list = False
+
+        i = 2
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == "--month" and i + 1 < len(sys.argv):
+                month = sys.argv[i + 1]
+                i += 2
+            elif arg == "--instruction" and i + 1 < len(sys.argv):
+                instruction = sys.argv[i + 1]
+                i += 2
+            elif arg == "--stage" and i + 1 < len(sys.argv):
+                stage = sys.argv[i + 1]
+                i += 2
+            elif arg == "--plan-no" and i + 1 < len(sys.argv):
+                plan_no = sys.argv[i + 1]
+                i += 2
+            elif arg == "--source-order-no" and i + 1 < len(sys.argv):
+                source_order_no = sys.argv[i + 1]
+                i += 2
+            elif arg == "--plan-code" and i + 1 < len(sys.argv):
+                plan_code = sys.argv[i + 1]
+                i += 2
+            elif arg == "--env" and i + 1 < len(sys.argv):
+                environment = sys.argv[i + 1]
+                i += 2
+            elif arg == "--codes" and i + 1 < len(sys.argv):
+                codes = [c.strip() for c in sys.argv[i + 1].split(",") if c.strip()]
+                i += 2
+            elif arg == "--qty" and i + 1 < len(sys.argv):
+                quantities = [int(x) for x in sys.argv[i + 1].split(",") if x.strip()]
+                i += 2
+            elif arg == "--base" and i + 1 < len(sys.argv):
+                bases = [b.strip() for b in sys.argv[i + 1].split(",") if b.strip()]
+                i += 2
+            elif arg == "--list":
+                do_list = True
+                i += 1
+            else:
+                i += 1
+
+        if do_list:
+            result = list_plan_materials(month=month, environment=environment)
+        else:
+            items = None
+            if codes:
+                qty_list = quantities or []
+                items = []
+                for idx, code in enumerate(codes):
+                    qty = qty_list[idx] if idx < len(qty_list) else None
+                    base = bases[idx] if bases and idx < len(bases) else None
+                    items.append({"code": code,
+                                  "allocations": [{"base": base, "qty": qty}] if base else []})
+            result = execute_plan_month(month=month, items=items, instruction=instruction,
+                                        stages=stage, plan_no=plan_no,
+                                        source_order_no=source_order_no, plan_code=plan_code,
+                                        environment=environment)
 
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):

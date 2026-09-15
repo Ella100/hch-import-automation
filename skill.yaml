@@ -1,5 +1,5 @@
 ---
 name: hch-import-automation
-description: Automate HCH data import (task order / month demand / delay plan) and commercial order machine (order, approval, scheduling, HCH processing)
+description: Automate HCH data import (task order / month demand / delay plan), commercial order machine (order, approval, scheduling, HCH processing), and commercial month plan (forecast order, sale plan order, approval, push to purchase)
 version: 1.0.0
 ---

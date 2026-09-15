@@ -57,6 +57,14 @@
         "selection_system": 3,
         "adjust_remarks": "测试"
       }
+    },
+    "plan_month": {
+      "description": "商用月计划：创建/覆盖预测单 → 生成销售计划单 → 销售计划审批 → 月需求计划 → HCH 提交销售审批 → 商用审批 → 推送采购。使用本流程专属 Token（与商用订单机分开配置）。manager = 商用管理端（步骤1~4 + 步骤6 商用审批），hch = HCH 系统（步骤5~7）",
+      "tokens": {
+        "manager": "",
+        "hch": ""
+      },
+      "bases": ["N55", "N46", "N45", "N48", "N50"]
     }
   }
 }

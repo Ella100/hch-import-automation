@@ -1,6 +1,6 @@
 ---
 name: hch-import-automation
-description: 'Automate HCH system workflows. (1) Data import for task orders, monthly demand plans, and delay plans with multi-environment support (QA/UAT). (2) Commercial order machine (商用订单机): submit order, client/manager approval, production scheduling, and HCH order-machine processing (adjust, allocate base, transfer plan, push sale plan no) on qasalescloud + ds-oms.'
+description: 'Automate HCH system workflows. (1) Data import for task orders, monthly demand plans, and delay plans with multi-environment support (QA/UAT). (2) Commercial order machine (商用订单机): submit order, client/manager approval, production scheduling, and HCH order-machine processing (adjust, allocate base, transfer plan, push sale plan no) on qasalescloud + ds-oms. (3) Commercial month plan (商用月计划): create/overwrite forecast order, generate sale plan order, plan approval, monthly demand plan, HCH submit-to-sale-audit, commercial approval, and push to purchase.'
 category: Automation
 user-invocable: true
 ---
@@ -9,7 +9,7 @@ user-invocable: true
 
 Automate HCH system data import with dual-token authentication, multi-environment support (QA/UAT), and comprehensive error handling. Supports task orders, monthly demand plans, and delay plans.
 
-This skill also covers the **Commercial Order Machine (商用订单机)** end-to-end flow across two systems — see the dedicated section near the end of this document.
+This skill also covers the **Commercial Order Machine (商用订单机)** and the **Commercial Month Plan (商用月计划)** end-to-end flows across two systems — see the dedicated sections near the end of this document.
 
 ## Features
 
@@ -19,6 +19,7 @@ This skill also covers the **Commercial Order Machine (商用订单机)** end-to
 - **High inventory detection**: Automatic retry for CWMS service degradation, supports specific material import with high_inventory_id
 - **Error recovery**: Automatic retry mechanism (3 retries, 20s interval) for CWMS service degradation
 - **Commercial order machine**: One-shot order → approval → scheduling → HCH processing, with stage-level execution
+- **Commercial month plan**: One-shot forecast order → sale plan order → approval → monthly demand plan → HCH audit → push to purchase, driven by natural language
 
 ## First-time Setup（首次配置）
 
@@ -54,8 +55,12 @@ This skill also covers the **Commercial Order Machine (商用订单机)** end-to
 | `api_config.order_machine.tokens.client` | 商用订单机 — 客户端（商品中心） |
 | `api_config.order_machine.tokens.manager` | 商用订单机 — 管理端 |
 | `api_config.order_machine.tokens.hch` | 商用订单机 — HCH 系统 |
+| `api_config.plan_month.tokens.manager` | 商用月计划 — 商用管理端 |
+| `api_config.plan_month.tokens.hch` | 商用月计划 — HCH 系统 |
 
 > 优先级：**显式函数入参 > `automation_config.json`**。请勿把 Token 提交到仓库或打进分享包。
+>
+> 商用月计划使用**自己的** Token（`api_config.plan_month.tokens`），与商用订单机 `order_machine.tokens` **分开配置、互不借用**。
 
 ## Quick Start
 
@@ -399,6 +404,168 @@ python hch_cli.py order --instruction "物料顶码ZN62105A 珠海基地数量10
 - Missing manager/hch token → that segment is skipped (order submission and client approval still run).
 - The order number comes from `orderSubmit` response `data.orderList[].code`.
 
+## Commercial Month Plan (商用月计划)
+
+One-shot commercial **month plan** flow across the same two systems, driven by natural language. It creates (or overwrites) the plan month's forecast order, fills each material's base quantities, generates the sale plan order, approves it, waits for the downstream monthly demand plan, then hands the source order number to HCH for submit → audit → push to purchase.
+
+**Trigger phrases (中文触发词)**:
+`商用月计划`、`月计划`、`商用计划`、`生成销售计划单`、`生成XX月的商用月计划`、`销售计划审批`、`月需求计划`、`推送采购`、`继续推送`、`补跑HCH`、`后续流程`、`计划单号`、`来源单号`
+
+> 触发词分两类：**带月份+物料基地数量的**（跑全流程，或 `plan` 阶段）、**带计划单号的**（分段续跑，见下）。
+
+### 分段执行（stages）
+
+**支持分段**。若用户只给一个计划单号，技能会按前缀自动判断该跑哪一段 —— 不用再给月份和物料。
+
+| stage | 覆盖步骤 | 需要的入参 | 说明 |
+|-------|----------|------------|------|
+| `all` | 1~7 | `month` + `items`（或 `instruction`） | 默认；一站到底 |
+| `plan` | 1~2 | `month` + `items` | 只建单 + 生成销售计划单，返回 `planCode`（SP…） |
+| `approve` | 3~4 | `plan_code`（SP…） | 销售计划审批 + 取月需求计划号，返回 `sourceOrderNo`（JHY…） |
+| `hch` | 5~7 | `source_order_no`（JHY…） | HCH 提交销售审批 → 商用审批 → 推送采购 |
+| `push` | 7 | `source_order_no`（JHY…） | 只推送采购（重推/补推） |
+
+- 单号可用 `plan_no` 传（**按前缀自动识别**：`JHY…` → 来源单号 → `hch`；`SP…` → 销售计划单号 → `approve`），也可写进 `instruction` 整句里。
+- **不传 `stages` 时自动判断**：给了 `source_order_no` → `hch`；给了 `plan_code` → `approve`；否则 `all`。
+- `stages` 也接受中文：`生成销售计划单` → plan、`销售计划审批` → approve、`后续流程`/`补跑HCH` → hch、`推送采购` → push、`全流程` → all。
+- 按阶段校验 Token：`plan`/`approve` 只要管理端；`hch`/`push` 需要管理端 + HCH。
+- 只支持 `JHY…`（来源单号）和 `SP…`（销售计划单号）；`YC…`/`YX…` 不能作为续跑入口（会报错并提示）。
+
+### Flow (7 steps)
+
+1. Create/overwrite the forecast order for the month
+   `salesForecastForecastOrder/getCreateInitData` → `/create` → `/pageList` (newest for that month = `forecastOrderId`)
+   - ⚠️ 若 `create` 报 **`G6001`「当日中台快照数据不存在」**：技能会调
+     `salesForecastBiDataSnapshot/getSyncInfo`（**读**各产线 `syncStatus`）→ `salesForecastBiDataSnapshot/startSync`
+     （`{deptId, productLineIdList}`，**真正触发**同步，等价前端「同步数据」按钮），
+     然后**中止本次流程**并返回提示 **「请确认数据同步后再执行后续程序。」**（`need_sync: true`）——等中台同步 1~2 分钟后重跑即可。
+2. Fill base quantities and generate the sale plan order
+   `/checkPlanAndSave` (per detail: `actualBaseQty` per base + `actualPlanQty` total) → `/generatePlanOrder` → `planCode`（SP…）
+3. Approve the sale plan order
+   `salesForecastPlanOrder/page?planCodeAllLike=SP…` → `activitiFlow/listUserTodoTasks` → `salesForecast/approval/completeTaskSalesPlanSubmit`
+4. Get the newest monthly demand plan → `demandPlanCode`（JHY… = HCH source order no）
+   审批后**下游异步生成，通常 1 分钟内**（技能会自动等待重试）
+5. HCH: find the draft by source order no → submit to sale audit
+   `/web/monthProductionPlanDraft/page` → `/submitToSaleAudit`
+6. HCH: poll audit row status → `auditStatus` 1=新增(等待) / 20=审批中(继续)
+   `auditOrder/pageList` → if 审批中, commercial approval: `psMonthlySalesDemandPlan/page?demandPlanCode=…` → `activitiFlow/listUserTodoTasks` → `activitiFlow/completeTask`
+7. HCH: push every data row to purchase
+   `/month-production-plan/page` → `/month-production-plan/push-month-plan/sale-plan-no`（body 是数组，多行逐条推送）
+
+> ⏱ **HCH「新增 → 审批中」由 HCH 定时任务推进，约每 5 分钟一次** —— 第 6 步默认最长等待 10 分钟，日志会持续提示"正在等待定时任务更新审批状态"，属正常现象。
+
+### Tokens & systems
+
+| Token | System | Used for |
+|-------|--------|----------|
+| `manager` | qasalescloud.gree.com | 步骤 1~4（创建预测单 / 生成计划单 / 销售计划审批 / 查月需求计划）+ 步骤 6 商用审批 |
+| `hch` | ds-oms.gree.com:9002 (QA) / :9108 (UAT) | 步骤 5~7（提交销售审批 / 查询审批状态 / 推送采购） |
+
+配置在本流程**专属**的 `api_config.plan_month.tokens`（与商用订单机分开配置，不借用 `order_machine.tokens`）：
+
+```json
+"api_config": {
+  "plan_month": {
+    "tokens": { "manager": "<JWT>", "hch": "<JWT>" },
+    "bases": ["N55", "N46", "N45", "N48", "N50"]
+  }
+}
+```
+Token 也可按次传入（显式入参优先于配置）。不要在对话里回显 Token。
+
+### 可填写的基地
+
+默认与前端一致，只有这 5 个（`api_config.plan_month.bases` 可覆盖）：
+
+| 基地 | wareCode | 基地 | wareCode | 基地 | wareCode |
+|------|----------|------|----------|------|----------|
+| 合肥 | `N55` | 洛阳 | `N46` | 南京 | `N45` |
+| 长沙 | `N48` | 珠海 | `N50` | | |
+
+- 写法支持 `珠海基地` / `珠海` / `N50`。
+- **同一物料可以分多个基地**（`珠海基地10、洛阳基地20`）。
+- 不在上表内的基地会**直接报错**（不会静默丢弃）。
+
+### Natural-language → call mapping
+
+| User says | Call |
+|-----------|------|
+| 帮我生成2026年9月的商用月计划，其中KN850W5140 珠海基地10、洛阳基地20；KM50001700 长沙基地2 | `execute_plan_month(instruction="帮我生成2026年9月的商用月计划，其中KN850W5140 珠海基地10、洛阳基地20；KM50001700 长沙基地2")` |
+| 2026年9月商用月计划：KN850W5140 珠海10、洛阳20 | `execute_plan_month(instruction="…")` |
+| 先看看9月商用月计划有哪些物料顶码 | `list_plan_materials(month="2026-09")` |
+| 在 UAT 环境跑 | add `environment="uat"` |
+| 结构化入参 | `execute_plan_month(month="2026-09", items=[{"code":"KN850W5140","allocations":[{"base":"珠海基地","qty":10}]}])` |
+| **提供计划单号 JHY20260914001，HCH 自动进行后续流程** | `execute_plan_month(source_order_no="JHY20260914001", stages="hch")` 或 `continue_plan_month(plan_no="JHY20260914001")` |
+| 计划单号JHY20260914001 只推送采购 | `execute_plan_month(plan_no="JHY20260914001", stages="push")` |
+| 销售计划单 SP2026090001 补审批 | `execute_plan_month(plan_code="SP2026090001", stages="approve")` |
+| 2026年9月只建单生成销售计划单，不审批 | `execute_plan_month(month="2026-09", items=[…], stages="plan")` |
+| 订单/计划单号写在整句里 | `execute_plan_month(instruction="计划单号JHY20260914001 继续推送采购", stages="hch")` |
+
+> **月份、基地数量、计划单号都能从整句话里抽**：`"2026年9月"` / `"2026-09"` / `"9月"`（默认当年）、`JHY…` / `SP…` 都认。
+> 智能体只需把用户原句照搬进 `instruction` 即可，不必自己拆句。
+
+### `execute_plan_month()` parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `instruction` | 推荐 | 自然语言整句：抽月份 + 每个顶码的各基地数量 |
+| `month` | 二选一 | 计划月份 `YYYY-MM`（也可从 `instruction` 抽） |
+| `items` | 二选一 | `[{"code":"顶码","allocations":[{"base":"珠海基地","qty":10}, …]}]`；也支持 `bases` 字典 / `base`+`qty` 简写 |
+| `manager_token` | No | 商用管理端 Token（缺省读配置） |
+| `hch_token` | No | HCH 系统 Token（缺省读配置） |
+| `bases` | No | 覆盖可填写基地（缺省读配置 / 内置 5 个） |
+| `environment` | No | `qa` (default) or `uat` |
+| `config_path` | No | 自定义配置文件路径 |
+| `stages` | No | `all`(默认) \| `plan` \| `approve` \| `hch` \| `push`；不传则按单号自动判断 |
+| `plan_no` | No | 计划单号 `JHY…`（→`hch`）或 `SP…`（→`approve`），按前缀自动识别 |
+| `plan_code` | No | 销售计划单号 `SP…`（`stages=approve`） |
+| `source_order_no` | No | HCH 来源单号 `JHY…`（`stages=hch`/`push`） |
+
+### Response format
+
+```json
+{
+  "success": true,
+  "message": "商用月计划执行成功（阶段=all，月份=2026-09）",
+  "data": { "stage": "all", "month": "2026-09", "environment": "qa",
+            "supportedBases": ["N55","N46","N45","N48","N50"],
+            "planCode": "SP2026090001", "sourceOrderNo": "JHY20260914001",
+            "forecastOrderId": 123,
+            "items": [{"detailId": 456, "commodityCode": "KN850W5140", "quantities": {"N50": 10, "N46": 20}}],
+            "flow": {"forecastOrderCode": "YC2026090001", "planCode": "SP2026090001",
+                     "sourceOrderNo": "JHY20260914001", "salePlanNo": "YX2026091401",
+                     "auditOrderNo": "AU001",
+                     "pushed": [{"salePlanNo": "YX2026091401", "success": true}]} },
+  "summary": { "计划月份": "2026-09", "预测单号": "YC2026090001", "销售计划单": "SP2026090001",
+               "来源单号": "JHY20260914001", "销售计划号": "YX2026091401",
+               "审批单号": "AU001", "已推送采购": "YX2026091401" },
+  "timestamp": "2026-09-14T10:00:00"
+}
+```
+
+> 分段执行时 `data.stage` 就是实际跑的那一段（如 `"hch"`），`data.planCode` / `data.sourceOrderNo` 回传当前单号，供下一步串联使用。
+
+### CLI
+
+```bash
+python hch_cli.py plan-month --month 2026-09 --instruction "KN850W5140 珠海基地10、洛阳基地20"
+python hch_cli.py plan-month --month 2026-09 --codes KN850W5140 --qty 10 --base 珠海基地
+python hch_cli.py plan-month --month 2026-09 --list                          # 只看该月预测单里的物料顶码
+# 分段执行（--stage: all|plan|approve|hch|push）
+python hch_cli.py plan-month --stage hch --source-order-no JHY20260914001     # 给来源单号跑 HCH 后续
+python hch_cli.py plan-month --stage approve --plan-code SP2026090001         # 补销售计划审批
+python hch_cli.py plan-month --stage push --plan-no JHY20260914001            # 只推送采购（按前缀自动识别）
+```
+
+### Rules
+
+- 每行物料按**填写的基地数量**保存（`actualBaseQty`），未填的基地记 0，`actualPlanQty` = 各基地之和；**不做数量上限校验**。
+- 预测单已存在时**继续覆盖**（带 `existForecastOrderId` 再调一次 `create`），不会报错中断。
+- 步骤 4 的 `JHY…` 单是审批后**下游异步生成**的，必须取"创建时间最新的一条"；本流程会等待重试（默认 12×5s）。
+- 步骤 6 的 HCH 定时任务等待较久（默认最长 10 分钟），日志会说明；不要误判为卡死。
+- Token 按阶段校验：`all`/`hch` 需要 `manager` + `hch`；`plan`/`approve` 只要 `manager`；`push` 只要 `hch`。
+- 分段续跑不重复执行前段：`hch` 直接用给的单号从步骤 5 开始，不会重新建单。
+
 ## Troubleshooting
 
 | Issue | Solution |
@@ -412,3 +579,14 @@ python hch_cli.py order --instruction "物料顶码ZN62105A 珠海基地数量10
 | 商用订单机: HCH 查不到订单明细 | Order may not be scheduled yet; the skill retries (default 5×2s). Verify the order number and HCH token |
 | 商用订单机: 分配基地失败 | Check `failedList` in the `allocate-base` response; warehouse code must be one of the 15 built-in bases |
 | 商用订单机: 无法识别的基地 | 用内置的 15 个基地名（珠海/合肥/长沙/南京/洛阳/石家庄/金湾/赣州/临沂/成都/杭州/芜湖/郑州/武汉/重庆）或直接给 wareCode（`N50`、`N40A` 等） |
+| 商用月计划: 缺少管理端 / HCH Token | 填 `api_config.plan_month.tokens.manager` 与 `.hch`（与订单机分开配置） |
+| 商用月计划: 该月预测单里没有物料顶码 X | 先 `list_plan_materials(month=...)` 看可用顶码；顶码必须已在该月预测单里 |
+| 商用月计划: 基地不在可填写范围内 | 只能用 合肥(N55)/洛阳(N46)/南京(N45)/长沙(N48)/珠海(N50)，或用 `api_config.plan_month.bases` 覆盖 |
+| 商用月计划: 一直显示"等待定时任务更新审批状态" | HCH 定时任务约每 5 分钟一次，默认最长等 10 分钟；超时后稍后重跑即可 |
+| 商用月计划: 未找到月需求计划单（步骤 4） | `JHY…` 单由审批后异步生成，本流程会等待 12×5s；仍失败说明下游较慢，稍后重跑 |
+| 商用月计划: 无法识别的计划单号 | 只支持 `JHY…`（来源单号）与 `SP…`（销售计划单号）；`YC…`/`YX…` 不能作为续跑入口 |
+| 商用月计划: 缺少来源单号 | `stages=hch`/`push` 需给 `JHY…`（来源单号，即月需求计划单号）；可用 `list_plan_materials` 或商用页面查 |
+| 商用月计划: 缺少销售计划单号 | `stages=approve` 需给 `SP…`（`generatePlanOrder` 返回的 `planCode`） |
+| 商用月计划: 报 `G6001`「当日中台快照数据不存在」 | 技能已自动 `getSyncInfo` 读状态 + `startSync` 触发同步并中止流程，返回 `need_sync: true`；等中台同步 1~2 分钟再重跑同一条命令 |
+| 商用月计划: `getSyncInfo`/`startSync` 调用失败 | 不影响提示：仍会中止并提示「请确认数据同步后再执行后续程序」；可去页面点「同步数据」按钮，或确认管理端 Token 未过期 |
+| 商用月计划: `getCreateInitData` 没返回 `productLines` | 说明中台快照还没同步好（前端也会这样）；技能会退回用 `getSyncInfo` 的产线列表，取不到才兜底 `productLineId=1` |
