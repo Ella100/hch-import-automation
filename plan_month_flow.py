@@ -154,10 +154,15 @@ HCH_STATUS_IN_AUDIT = 20    # 审批中：可以去做商用侧审批
 #   步骤4：月需求计划单由审批后下游异步生成，通常 1 分钟内
 DEMAND_WAIT_RETRIES = int(os.environ.get("PLAN_DEMAND_RETRIES", "12"))
 DEMAND_WAIT_INTERVAL = float(os.environ.get("PLAN_DEMAND_INTERVAL", "5"))
-#   步骤6：HCH「新增 → 审批中」由定时任务更新，约 5 分钟执行一次 → 默认最长等 10 分钟
+#   步骤5：HCH 生产计划草稿由审批后下游异步生成（比步骤4的 JHY… 再晚约 1~2 分钟），查不到就轮询
+#         必须有上限：默认 12 次 × 15 秒 = 3 分钟，超时即失败，不会无限等待
+DRAFT_WAIT_RETRIES = int(os.environ.get("PLAN_DRAFT_RETRIES", "12"))
+DRAFT_WAIT_INTERVAL = float(os.environ.get("PLAN_DRAFT_INTERVAL", "15"))
+#   步骤6：HCH「新增 → 审批中」由定时任务更新，约 5 分钟执行一次
+#         默认 30 次 × 20 秒 = 10 分钟
 HCH_AUDIT_TASK_INTERVAL_MIN = 5
-AUDIT_WAIT_RETRIES = int(os.environ.get("PLAN_AUDIT_RETRIES", "60"))
-AUDIT_WAIT_INTERVAL = float(os.environ.get("PLAN_AUDIT_INTERVAL", "10"))
+AUDIT_WAIT_RETRIES = int(os.environ.get("PLAN_AUDIT_RETRIES", "30"))
+AUDIT_WAIT_INTERVAL = float(os.environ.get("PLAN_AUDIT_INTERVAL", "20"))
 PAGE_LIMIT = int(os.environ.get("PLAN_PAGE_LIMIT", "20"))
 
 # 本轮流程开始时间（毫秒，北京时间），用于识别「本轮新生成」的月需求计划单
@@ -463,14 +468,30 @@ def run_demand_plan_phase(api, month=None):
 
 # --------------------------------------------------------------------------- 步骤 5
 
-def hch_find_draft(api, source_order_no):
-    data = api.post_form(HCH_DRAFT + "/page",
-                         {"current": 1, "size": 10, "orderNos": source_order_no},
-                         referer=hch_referer())
-    rows = data.get("data") or []
-    if not rows:
-        raise RuntimeError(f"HCH 未找到来源单号 {source_order_no} 的生产计划草稿")
-    return rows[0]
+def hch_find_draft(api, source_order_no, retries=None, interval=None):
+    """按来源单号找 HCH 生产计划草稿；查不到就等待重试（有上限，不会无限等）。
+
+    草稿由审批后**下游异步生成**，比步骤 4 的 JHY… 单号还晚约 1~2 分钟，
+    因此这里轮询等待：最多 retries 次（默认 DRAFT_WAIT_RETRIES=12）×
+    interval 秒（默认 DRAFT_WAIT_INTERVAL=15），合计约 3 分钟，超时即失败。
+    超时后可 `--stage hch --source-order-no JHY…` 续跑，不必重跑整条 all。
+    """
+    retries = int(DRAFT_WAIT_RETRIES if retries is None else retries)
+    interval = float(DRAFT_WAIT_INTERVAL if interval is None else interval)
+    for attempt in range(1, retries + 1):
+        data = api.post_form(HCH_DRAFT + "/page",
+                             {"current": 1, "size": 10, "orderNos": source_order_no},
+                             referer=hch_referer())
+        rows = data.get("data") or []
+        if rows:
+            return rows[0]
+        if attempt < retries:
+            log(f"   ⏳ 暂未找到来源单号 {source_order_no} 的 HCH 生产计划草稿（草稿下游异步生成），"
+                f"{int(interval)} 秒后重试（第 {attempt}/{retries} 次）")
+            time.sleep(interval)
+    raise RuntimeError(
+        f"HCH 未找到来源单号 {source_order_no} 的生产计划草稿"
+        f"（已重试 {retries} 次、约 {int(retries * interval)} 秒，草稿由下游异步生成，可稍后续跑）")
 
 
 def run_hch_submit_phase(api, source_order_no):

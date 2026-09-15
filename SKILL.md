@@ -563,6 +563,10 @@ python hch_cli.py plan-month --stage push --plan-no JHY20260914001            # 
 - 预测单已存在时**继续覆盖**（带 `existForecastOrderId` 再调一次 `create`），不会报错中断。
 - 步骤 4 的 `JHY…` 单是审批后**下游异步生成**的，必须取"创建时间最新的一条"；本流程会等待重试（默认 12×5s）。
 - 步骤 6 的 HCH 定时任务等待较久（默认最长 10 分钟），日志会说明；不要误判为卡死。
+- 步骤 5 的 HCH 生产计划草稿也由审批后**下游异步生成**（比步骤 4 的 `JHY…` 再晚约 1~2 分钟）；
+  引擎已内置**有限重试**：查不到就每 15s 重试，最多 12 次（合计约 3 分钟）即报错，**不会无限等待**
+  （可用环境变量 `PLAN_DRAFT_RETRIES` / `PLAN_DRAFT_INTERVAL` 调整）。超时后用
+  `--stage hch --source-order-no JHY…` 续跑即可，**不要重跑 `all`**（会重复建单/覆盖）。
 - Token 按阶段校验：`all`/`hch` 需要 `manager` + `hch`；`plan`/`approve` 只要 `manager`；`push` 只要 `hch`。
 - 分段续跑不重复执行前段：`hch` 直接用给的单号从步骤 5 开始，不会重新建单。
 
@@ -584,6 +588,7 @@ python hch_cli.py plan-month --stage push --plan-no JHY20260914001            # 
 | 商用月计划: 基地不在可填写范围内 | 只能用 合肥(N55)/洛阳(N46)/南京(N45)/长沙(N48)/珠海(N50)，或用 `api_config.plan_month.bases` 覆盖 |
 | 商用月计划: 一直显示"等待定时任务更新审批状态" | HCH 定时任务约每 5 分钟一次，默认最长等 10 分钟；超时后稍后重跑即可 |
 | 商用月计划: 未找到月需求计划单（步骤 4） | `JHY…` 单由审批后异步生成，本流程会等待 12×5s；仍失败说明下游较慢，稍后重跑 |
+| 商用月计划: 步骤 5 报「HCH 未找到来源单号 JHY… 的生产计划草稿」 | 草稿由下游异步生成（比 `JHY…` 再晚约 1~2 分钟）；引擎自动每 15s 重试、最多 12 次（合计约 3 分钟，可用 `PLAN_DRAFT_RETRIES`/`PLAN_DRAFT_INTERVAL` 调），仍失败则 `python hch_cli.py plan-month --stage hch --source-order-no JHY…` 续跑，**别重跑 `all`** |
 | 商用月计划: 无法识别的计划单号 | 只支持 `JHY…`（来源单号）与 `SP…`（销售计划单号）；`YC…`/`YX…` 不能作为续跑入口 |
 | 商用月计划: 缺少来源单号 | `stages=hch`/`push` 需给 `JHY…`（来源单号，即月需求计划单号）；可用 `list_plan_materials` 或商用页面查 |
 | 商用月计划: 缺少销售计划单号 | `stages=approve` 需给 `SP…`（`generatePlanOrder` 返回的 `planCode`） |
