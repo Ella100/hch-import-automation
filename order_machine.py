@@ -451,7 +451,7 @@ def fetch_production_plan(api, order_code):
 
 
 def submit_production_schedule(api, order_code):
-    """提交排产（psOrderDemandPlan/salesApproval/submit）。返回是否成功。"""
+    """提交排产（psOrderDemandPlan/salesApproval/submit）。返回提交成功的排产行数（0 = 失败）。"""
     records = []
     for attempt in range(1, PS_RETRIES + 1):
         records = fetch_production_plan(api, order_code)
@@ -462,7 +462,7 @@ def submit_production_schedule(api, order_code):
             time.sleep(PS_RETRY_WAIT)
     if not records:
         log(f"  ✗ 订单 {order_code} 无可提交的排产记录")
-        return False
+        return 0
 
     payload = []
     for r in records:
@@ -482,22 +482,21 @@ def submit_production_schedule(api, order_code):
 
     if not payload:
         log(f"  ✗ 订单 {order_code} 无满足条件的排产明细")
-        return False
+        return 0
 
     res = api.put(PS_SUBMIT_PATH, payload, referer=PS_REFERER)
     if res.get("data"):
         ids = ", ".join(str(p.get("id")) for p in payload)
         log(f"  ✓ 提交排产成功，共 {len(payload)} 行（明细 id: {ids}）")
-        return True
+        return len(payload)          # 返回行数：HCH 阶段据此等待明细落库齐全
     log(f"  ✗ 提交排产失败: {json.dumps(res.get('data'), ensure_ascii=False)[:300]}")
-    return False
+    return 0
 
 
-def hch_query_details(api, order_code):
-    """按订单号查询 HCH 订单机明细（order-machine/page-detail，form）。
+def hch_page_details(api, order_code):
+    """查询 HCH 订单机明细（order-machine/page-detail，form），返回 (rows, total)。
 
-    返回全部明细行（按其 count 翻页取全）。响应 data[] 每行含
-    id / sourceOrderItemNo / planQuantity / selectionSystem / needMerge / status / topCode 等。
+    total 为服务端 count，是**当时**已落库的行数（可能尚未同步齐全）。
     """
     rows = []
     total = None
@@ -512,6 +511,48 @@ def hch_query_details(api, order_code):
         if not batch or (total is not None and len(rows) >= int(total)):
             break
         page += 1
+    return rows, (0 if total is None else int(total))
+
+
+def hch_query_details(api, order_code):
+    """按订单号查询 HCH 订单机明细（order-machine/page-detail，form）。
+
+    返回全部明细行（按其 count 翻页取全）。响应 data[] 每行含
+    id / sourceOrderItemNo / planQuantity / selectionSystem / needMerge / status / topCode 等。
+    """
+    rows, _ = hch_page_details(api, order_code)
+    return rows
+
+
+def hch_wait_details(api, order_code, expect=None):
+    """等待 HCH 明细落库齐全后返回全部明细行。
+
+    提交排产后 HCH 侧各明细行是**异步分批落库**的：先到的行立刻可查，后到的行要等一两秒。
+    因此不能"查到 >=1 行就继续"——漏掉的行没做 adjust / 分配基地，
+    transfer-plan 会以「仅支持已分配基地或生产已选型的行转生产计划」把**整单**拒掉。
+
+    判据：
+      - expect 已知（= 步骤 9 提交排产的明细行数）：``count >= expect`` 即认为齐全，立即返回（无额外等待）；
+      - expect 未知：``count`` 连续两次相同即认为稳定。
+    最多重试 HCH_RETRIES 次、每次间隔 HCH_RETRY_WAIT 秒；超时则返回已查到的行并告警。
+    """
+    rows = []
+    total = 0
+    prev_total = None
+    for attempt in range(1, HCH_RETRIES + 1):
+        rows, total = hch_page_details(api, order_code)
+        if total > 0 and ((expect is not None and total >= expect)
+                          or (expect is None and total == prev_total)):
+            return rows
+        prev_total = total
+        if attempt < HCH_RETRIES:
+            log(f"    ⏳ HCH 明细尚未齐全（第 {attempt} 次：{total} 行"
+                + (f"，应为 {expect} 行" if expect else "")
+                + f"），{HCH_RETRY_WAIT:g}s 后重试...")
+            time.sleep(HCH_RETRY_WAIT)
+    if total:
+        log(f"    ⚠️ HCH 明细等待结束：共 {total} 行"
+            + (f"，预期 {expect} 行（差额行将无法转生产计划）" if expect and total < expect else ""))
     return rows
 
 
@@ -573,7 +614,7 @@ def hch_push_sale_plan_no(api, sale_plan_no):
     return bool(res.get("success"))
 
 
-def run_hch_phase(api, order_code, result_sink=None, ware_map=None, ware_codes=None):
+def run_hch_phase(api, order_code, result_sink=None, ware_map=None, ware_codes=None, expect=None):
     """对单个订单执行 HCH 订单机处理全流程。返回是否成功。
 
     明细几行就 adjust 几次、再 allocate-base 几次（每行各一次），随后转生产计划、
@@ -582,16 +623,11 @@ def run_hch_phase(api, order_code, result_sink=None, ware_map=None, ware_codes=N
     ware_map: 可选 dict {顶码: wareCode}，为指定顶码固定基地；键 "*" 表示整单统一。
               未在 ware_map 中的行仍从 ware_codes 随机取。
     ware_codes: 可选，随机候选（缺省用模块级 HCH_WARE_CODES）。
+    expect: 可选，本订单在 HCH 应有的明细行数（= 步骤 9 提交排产的行数）。给定时会等
+            明细落库齐全再处理，避免漏行导致 transfer-plan 整单失败。
     """
-    # 1) 查询明细
-    rows = []
-    for attempt in range(1, HCH_RETRIES + 1):
-        rows = hch_query_details(api, order_code)
-        if rows:
-            break
-        if attempt < HCH_RETRIES:
-            log(f"    ⏳ HCH 暂未查到订单明细（第 {attempt} 次），{HCH_RETRY_WAIT:g}s 后重试...")
-            time.sleep(HCH_RETRY_WAIT)
+    # 1) 查询明细（等到落库齐全——查到部分行就继续会漏行，进而让 transfer-plan 整单失败）
+    rows = hch_wait_details(api, order_code, expect)
     if not rows:
         log(f"    ✗ HCH 未查询到订单 {order_code} 的明细")
         return False
@@ -877,6 +913,7 @@ def submit_order(token, codes, manager_token=None, hch_token=None, project_code=
         return 1
 
     # ---------- 步骤 8/10：管理端审批（需管理端 Token） ----------
+    schedule_rows = {}          # {订单号: 排产行数}，供 HCH 阶段判断明细是否落库齐全
     if not manager_token:
         log("⚠️ 未提供管理端 Token，跳过管理端审批与提交排产")
     else:
@@ -895,7 +932,10 @@ def submit_order(token, codes, manager_token=None, hch_token=None, project_code=
             code = o.get("code")
             log(f"  → 订单 {code} 提交排产...")
             try:
-                if not submit_production_schedule(manager_api, code):
+                count = submit_production_schedule(manager_api, code)
+                if count:
+                    schedule_rows[code] = count
+                else:
                     failed += 1
             except Exception as e:
                 log(f"  ✗ 提交排产异常 [{code}]: {e}")
@@ -918,7 +958,7 @@ def submit_order(token, codes, manager_token=None, hch_token=None, project_code=
         log(f"  → 订单 {code} HCH 处理...")
         try:
             if not run_hch_phase(hch_api, code, result_sink=result_sink, ware_map=ware_map,
-                                 ware_codes=ware_codes):
+                                 ware_codes=ware_codes, expect=schedule_rows.get(code)):
                 failed += 1
         except Exception as e:
             log(f"  ✗ HCH 处理异常 [{code}]: {e}")
